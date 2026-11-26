@@ -76,7 +76,7 @@ async function buildSnapshot(tx: Tx, documentId: string): Promise<{ snapshot: Ge
  * the existing output (or the in-flight request); a failed one is retried.
  */
 export async function requestGeneration(ctx: Ctx, actor: Actor, input: { tenantId: string; documentId: string }) {
-  return withTenant(ctx.db, input.tenantId, async (tx) => {
+  const result = await withTenant(ctx.db, input.tenantId, async (tx) => {
     const { snapshot, basePdfId } = await buildSnapshot(tx, input.documentId);
     const snapshotHash = stableHash(snapshot);
     const config = { deterministic: true, pageOffsets: null };
@@ -109,6 +109,8 @@ export async function requestGeneration(ctx: Ctx, actor: Actor, input: { tenantI
     const row = (await tx.query('SELECT status, output_sha256 FROM generated_documents WHERE id = $1', [id])).rows[0];
     return { generatedDocumentId: id, status: row.status as string, sha256: row.output_sha256 as string | null, snapshotHash };
   });
+  if (result.status === 'pending') ctx.dispatchNow?.();
+  return result;
 }
 
 /** The `generate_output` job. Writes only the generated-document record; approved data is never touched. */

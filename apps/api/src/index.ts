@@ -3,6 +3,8 @@ import { loadConfig } from './config';
 import { createPool, migrate } from './db/pool';
 import type { Ctx } from './domain/common';
 import { createDocOpsRoutes } from './http/docops';
+import { dispatchOutbox } from './jobs/dispatcher';
+import { createQueue } from './jobs/queue';
 import { buildProviders } from './llm/providers';
 import { FilesystemObjectStore } from './storage/objectStore';
 
@@ -25,6 +27,9 @@ async function main() {
     // The API registers no model providers: it never runs extraction or validation.
     providers: buildProviders({ extractionModel: config.extractionModel, semanticModel: config.semanticModel }),
   };
+  // Start processing the moment a submission commits, instead of waiting for the worker's dispatcher poll.
+  const queue = createQueue(ctx);
+  ctx.dispatchNow = () => void dispatchOutbox(ctx.db, queue).catch((e) => console.warn('[dispatch-now] deferred to worker:', e.message));
   const server = createApiServer(createDocOpsRoutes(ctx));
   server.listen(port, '0.0.0.0', () => console.log(`lomi-api listening on http://0.0.0.0:${port}`));
   const shutdown = (signal: string) => {

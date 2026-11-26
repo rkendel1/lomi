@@ -92,3 +92,35 @@ export async function proposeCorrection(ctx: Ctx, actor: Actor, input: { tenantI
     return { proposalId: rows[0].id as string, status: 'open', requiresHumanApproval: true };
   });
 }
+
+/**
+ * "Approve all verified": approve every pending value on the current version
+ * whose evidence was verified and whose checks raised nothing (no fail,
+ * uncertain or error). Each approval is recorded as its own human decision.
+ * Gaps and flagged values are left for individual review.
+ */
+export async function approveVerified(ctx: Ctx, actor: Actor, input: { tenantId: string; documentId: string; note?: string }) {
+  if (actor.kind !== 'user') throw new DomainError('FORBIDDEN', 'Only a person can approve values.');
+  const ids = await withTenant(ctx.db, input.tenantId, async (tx) =>
+    (
+      await tx.query(
+        `SELECT ev.id FROM documents d JOIN extracted_values ev ON ev.document_version_id = d.current_version_id
+         WHERE d.id = $1 AND ev.review_state = 'pending' AND ev.disposition <> 'gap'
+           AND EXISTS (SELECT 1 FROM evidence e WHERE e.value_id = ev.id)
+           AND NOT EXISTS (SELECT 1 FROM validation_results vr WHERE vr.value_id = ev.id AND vr.outcome IN ('fail', 'uncertain', 'error'))
+         ORDER BY ev.semantic_key`,
+        [input.documentId]
+      )
+    ).rows.map((r) => r.id as string)
+  );
+  let last: Awaited<ReturnType<typeof reviewValue>> | null = null;
+  for (const valueId of ids) {
+    last = await reviewValue(ctx, actor, { tenantId: input.tenantId, valueId, action: 'approve', note: input.note ?? 'Approved as part of "approve all verified"' });
+  }
+  const remaining = await withTenant(ctx.db, input.tenantId, async (tx) => {
+    const v = (await tx.query('SELECT current_version_id FROM documents WHERE id = $1', [input.documentId])).rows[0];
+    if (!v) throw notFound('Document');
+    return progressFor(tx, v.current_version_id);
+  });
+  return { approved: ids.length, progress: last?.progress ?? remaining };
+}

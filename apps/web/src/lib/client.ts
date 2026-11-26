@@ -64,7 +64,17 @@ export async function me(): Promise<Me> {
   return res.json();
 }
 
-export async function devUsers(): Promise<Array<{ name: string; email: string; operator: boolean; token: string; tenants: string[] }>> {
+export interface DevUser {
+  name: string;
+  email: string;
+  operator: boolean;
+  experience: 'operations' | 'review' | 'submission';
+  token: string;
+  tenants: string[];
+  roles: string[];
+}
+
+export async function devUsers(): Promise<DevUser[]> {
   const res = await fetch(`${API_BASE}/api/auth/dev-users`);
   if (!res.ok) return [];
   return (await res.json()).users;
@@ -91,4 +101,42 @@ export function can(me: Me | null, tenant: string | null, permission: string): b
   if (me.operator) return true;
   const m = me.memberships.find((x) => x.slug === tenant);
   return Boolean(m?.permissions.includes(permission));
+}
+
+export type Experience = 'operations' | 'review' | 'submission';
+
+/** Which workspace an identity uses in a tenant: operators run Lomi, submitters send, everyone else reviews. */
+export function experienceOf(me: Me, tenant: string | null): Experience {
+  if (me.operator) return 'operations';
+  const role = me.memberships.find((m) => m.slug === tenant)?.role;
+  return role === 'submitter' ? 'submission' : 'review';
+}
+
+export interface IngressInfo {
+  tenant: string;
+  enabled: boolean;
+  defaultDocumentType: string | null;
+  submissionPage: string;
+  apiEndpoint: string;
+  documentTypes: Array<{ key: string; name: string; description: string | null; fields: string[] }>;
+}
+
+export interface SubmissionResult {
+  filename: string;
+  ok: boolean;
+  error?: string;
+  documentId?: string;
+  outcome?: 'new_document' | 'new_version' | 'duplicate_exact';
+}
+
+/** Submit files through the tenant's ingress URL (the same endpoint integrations use). */
+export async function submitFiles(tenant: string, files: File[], documentType: string): Promise<SubmissionResult[]> {
+  const form = new FormData();
+  form.append('documentType', documentType);
+  for (const f of files) form.append('file', f, f.name);
+  const res = await fetch(`${API_BASE}/api/in/${encodeURIComponent(tenant)}/documents`, { method: 'POST', headers: authHeaders(), body: form });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new ApiError(body?.error?.code ?? 'ERROR', body?.error?.message ?? body?.error ?? `Submission failed (${res.status})`);
+  if (Array.isArray(body.results)) return body.results as SubmissionResult[];
+  return [{ filename: files[0].name, ok: true, documentId: body.documentId, outcome: body.outcome }];
 }

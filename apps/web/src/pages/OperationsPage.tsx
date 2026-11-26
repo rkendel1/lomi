@@ -14,7 +14,13 @@ interface Stats {
 const secs = (s: number | null) => (s === null ? '—' : s < 90 ? `${Math.round(s)} s` : s < 5400 ? `${Math.round(s / 60)} min` : `${(s / 3600).toFixed(1)} h`);
 
 /** Operational visibility for Lomi operators (all customers) and customer admins (their own). */
-export const OperationsPage: React.FC<{ tenant: string; me: Me; onTenantsChanged: () => void }> = ({ tenant, me, onTenantsChanged }) => {
+export const OperationsPage: React.FC<{
+  tenant: string;
+  tenants: Array<{ slug: string; name: string }>;
+  me: Me;
+  onTenantChange: (slug: string) => void;
+  onTenantsChanged: () => void;
+}> = ({ tenant, tenants, me, onTenantChange, onTenantsChanged }) => {
   const [scope, setScope] = useState<'tenant' | 'all'>(me.operator ? 'all' : 'tenant');
   const [stats, setStats] = useState<Stats | null>(null);
   const [failures, setFailures] = useState<any[]>([]);
@@ -64,10 +70,25 @@ export const OperationsPage: React.FC<{ tenant: string; me: Me; onTenantsChanged
           <p className="muted">All figures are computed from recorded processing and review history.</p>
         </div>
         {me.operator && (
-          <div className="seg-control" role="group" aria-label="Scope">
-            <button className={scope === 'all' ? 'active' : ''} onClick={() => setScope('all')}>All customers</button>
-            <button className={scope === 'tenant' ? 'active' : ''} onClick={() => setScope('tenant')}>{tenant}</button>
-          </div>
+          <label className="scope-select">
+            <span>Showing</span>
+            <select
+              aria-label="Customer scope"
+              value={scope === 'all' ? '*' : tenant}
+              onChange={(e) => {
+                if (e.target.value === '*') setScope('all');
+                else {
+                  setScope('tenant');
+                  onTenantChange(e.target.value);
+                }
+              }}
+            >
+              <option value="*">All customers</option>
+              {tenants.map((t) => (
+                <option key={t.slug} value={t.slug}>{t.name}</option>
+              ))}
+            </select>
+          </label>
         )}
       </div>
       {error && <div className="error">{error}</div>}
@@ -91,7 +112,7 @@ export const OperationsPage: React.FC<{ tenant: string; me: Me; onTenantsChanged
                 <thead><tr><th>Customer</th><th>Documents</th><th>Awaiting review</th><th>Need Lomi</th></tr></thead>
                 <tbody>
                   {stats.byTenant.map((t) => (
-                    <tr key={t.slug} className={t.needs_operator ? 'row-hold' : ''}><td>{t.name}</td><td>{t.documents}</td><td>{t.awaiting_review}</td><td>{t.needs_operator}</td></tr>
+                    <tr key={t.slug} className={t.needs_operator ? 'row-hold clickable' : 'clickable'} onClick={() => { setScope('tenant'); onTenantChange(t.slug); }}><td><a href="#/operations" onClick={(e) => e.preventDefault()}>{t.name}</a></td><td>{t.documents}</td><td>{t.awaiting_review}</td><td>{t.needs_operator}</td></tr>
                   ))}
                 </tbody>
               </table>

@@ -1,5 +1,6 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { call, can, fileToBase64, type Me } from '../lib/client';
+import React, { useCallback, useEffect, useState } from 'react';
+import { call, can, type Me } from '../lib/client';
+import { UploadPanel } from '../components/ops/UploadPanel';
 import { ProgressBar, StatusBadge } from './shared';
 
 export interface DocumentSummary {
@@ -14,6 +15,7 @@ export interface DocumentSummary {
   failureReason: string | null;
   progress: null | { total: number; pending: number; gaps: number; approved: number; autoApproved: number; corrected: number; carriedOver: number; failedChecks: number };
   relatedDocuments: number;
+  warning: string | null;
 }
 
 const IN_FLIGHT = ['received', 'queued', 'parsing', 'extracting', 'validating', 'failed_retryable'];
@@ -34,9 +36,7 @@ export const DocumentsPage: React.FC<{ tenant: string; me: Me }> = ({ tenant, me
   const [type, setType] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const [uploadType, setUploadType] = useState('');
-  const fileRef = useRef<HTMLInputElement>(null);
+  const [showUpload, setShowUpload] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -66,31 +66,15 @@ export const DocumentsPage: React.FC<{ tenant: string; me: Me }> = ({ tenant, me
       .then((r) => {
         const usable = r.items.filter((t) => t.versions.some((v) => v.status === 'published'));
         setTypes(usable);
-        setUploadType(usable[0]?.key ?? '');
       })
       .catch(() => setTypes([]));
   }, [tenant]);
 
-  const upload = async (file: File) => {
-    setUploading(true);
-    setNotice(null);
-    try {
-      const result = await call('documents.submit', { tenant, documentType: uploadType, filename: file.name, contentBase64: await fileToBase64(file) });
-      setNotice(
-        result.outcome === 'duplicate_exact'
-          ? `"${file.name}" was already received (version ${result.duplicateOf.version}); nothing new was created.`
-          : `"${file.name}" was received. Lomi is reading it now.`
-      );
-      await load();
-    } catch (e) {
-      setNotice(`Upload failed: ${(e as Error).message}`);
-    } finally {
-      setUploading(false);
-      if (fileRef.current) fileRef.current.value = '';
-    }
-  };
-
   const waiting = items.filter((i) => ['awaiting_review', 'partially_reviewed'].includes(i.status)).length;
+  const startReviewing = async () => {
+    const next = await call<{ documentId: string | null }>('documents.next', { tenant });
+    if (next.documentId) window.location.hash = `/documents/${next.documentId}`;
+  };
   const onHold = items.filter((i) => i.status === 'failed_operator').length;
 
   return (
@@ -102,20 +86,33 @@ export const DocumentsPage: React.FC<{ tenant: string; me: Me }> = ({ tenant, me
             {items.length} document{items.length === 1 ? '' : 's'} · {waiting} need review{onHold ? ` · ${onHold} on hold` : ''}
           </p>
         </div>
-        {can(me, tenant, 'documents.submit') && types.length > 0 && (
-          <div className="upload-box">
-            <select aria-label="Document type" value={uploadType} onChange={(e) => setUploadType(e.target.value)}>
-              {types.map((t) => (
-                <option key={t.key} value={t.key}>{t.name}</option>
-              ))}
-            </select>
-            <input ref={fileRef} type="file" accept="application/pdf" aria-label="Upload PDF" hidden onChange={(e) => e.target.files?.[0] && void upload(e.target.files[0])} />
-            <button className="btn-primary" disabled={uploading} onClick={() => fileRef.current?.click()}>
-              {uploading ? 'Uploading…' : 'Upload PDF'}
+        <div className="head-actions">
+          {can(me, tenant, 'documents.submit') && (
+            <button onClick={() => setShowUpload((v) => !v)}>{showUpload ? 'Close upload' : 'Upload documents'}</button>
+          )}
+          {can(me, tenant, 'reviews.decide') && (
+            <button className="btn-primary" disabled={waiting === 0} onClick={() => void startReviewing()}>
+              {waiting ? `Start reviewing (${waiting})` : 'Nothing to review'}
             </button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
+      {showUpload && (
+        <section className="card">
+          <UploadPanel
+            tenant={tenant}
+            compact
+            onSubmitted={(results) => {
+              const ok = results.filter((r) => r.ok && r.outcome !== 'duplicate_exact').length;
+              const dup = results.filter((r) => r.outcome === 'duplicate_exact').length;
+              const bad = results.filter((r) => !r.ok);
+              setNotice([ok && `${ok} document${ok === 1 ? '' : 's'} received — processing has started.`, dup && `${dup} already received before.`, bad.length && `Rejected: ${bad.map((b) => `${b.filename} (${b.error})`).join(', ')}`].filter(Boolean).join(' '));
+              setShowUpload(false);
+              void load();
+            }}
+          />
+        </section>
+      )}
       {notice && <div className="notice">{notice}</div>}
       <div className="filters">
         <input type="search" placeholder="Search title, file or invoice number" value={search} onChange={(e) => setSearch(e.target.value)} aria-label="Search" />
@@ -150,6 +147,7 @@ export const DocumentsPage: React.FC<{ tenant: string; me: Me }> = ({ tenant, me
               <td>
                 <a href={`#/documents/${d.id}`}>{d.title}</a>
                 {d.relatedDocuments > 0 && <span className="tag" title="Another document carries the same identifying values">possible duplicate</span>}
+                {d.warning && <span className="tag tag-bad" title={d.warning}>check document type</span>}
               </td>
               <td>{d.documentType.name}</td>
               <td>v{d.currentVersion.number}</td>

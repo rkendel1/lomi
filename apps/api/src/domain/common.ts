@@ -8,6 +8,12 @@ export interface Ctx {
   store: ObjectStore;
   config: Config;
   providers: ProviderRegistry;
+  /**
+   * Publish committed outbox events right away (best effort, never awaited by
+   * callers). The outbox and the worker's dispatcher remain the guarantee;
+   * this only removes the polling delay so processing starts immediately.
+   */
+  dispatchNow?: () => void;
 }
 
 /** Who is acting. Agents carry the human they act for. */

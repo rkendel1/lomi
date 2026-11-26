@@ -4,7 +4,7 @@ import { audit, DomainError, notFound, type Actor, type Ctx } from './common';
 
 export const hashToken = (token: string) => createHash('sha256').update(token).digest('hex');
 
-/** Create a tenant with its default portal and API ingress endpoints. Lomi-operator operation. */
+/** Create a tenant with its tenant-URL ingress. Lomi-operator operation. */
 export async function createTenant(ctx: Ctx, actor: Actor, input: { slug: string; name: string; settings?: Record<string, unknown> }) {
   return withSystem(ctx.db, async (tx) => {
     const exists = await tx.query('SELECT 1 FROM tenants WHERE slug = $1', [input.slug]);
@@ -14,7 +14,7 @@ export async function createTenant(ctx: Ctx, actor: Actor, input: { slug: string
     ]);
     const tenantId = rows[0].id as string;
     await tx.query(
-      `INSERT INTO ingress_endpoints (tenant_id, key, kind, name) VALUES ($1, 'portal', 'portal', 'Customer portal upload'), ($1, 'api', 'api', 'API upload')`,
+      `INSERT INTO ingress_endpoints (tenant_id, key, kind, name) VALUES ($1, 'main', 'tenant_url', 'Tenant ingress URL')`,
       [tenantId]
     );
     await audit(tx, { tenantId, actor, action: 'tenant.created', subjectType: 'tenant', subjectId: tenantId, detail: { slug: input.slug } });
@@ -93,25 +93,58 @@ export async function issueToken(tx: Tx, principalId: string, label: string, tok
   return token;
 }
 
-export async function ingressList(ctx: Ctx, tenantId: string) {
-  return withTenant(ctx.db, tenantId, async (tx) =>
-    (await tx.query('SELECT key, kind, name, enabled FROM ingress_endpoints WHERE tenant_id = $1 ORDER BY key', [tenantId])).rows
-  );
+/** The tenant's ingress: one URL that accepts API, single and bulk submissions. */
+export async function ingressInfo(ctx: Ctx, tenantId: string) {
+  return withTenant(ctx.db, tenantId, async (tx) => {
+    const row = (
+      await tx.query(
+        `SELECT ie.enabled, dt.key AS default_type, t.slug FROM tenants t
+         LEFT JOIN ingress_endpoints ie ON ie.tenant_id = t.id AND ie.key = 'main'
+         LEFT JOIN document_types dt ON dt.id = ie.default_document_type_id WHERE t.id = $1`,
+        [tenantId]
+      )
+    ).rows[0];
+    if (!row) throw notFound('Tenant');
+    const types = (
+      await tx.query(
+        `SELECT DISTINCT ON (dt.id) dt.key, dt.name, dt.description, tv.definition->'fields' AS fields
+         FROM document_types dt JOIN template_versions tv ON tv.document_type_id = dt.id AND tv.status = 'published'
+         WHERE dt.tenant_id = $1 ORDER BY dt.id, tv.version DESC`,
+        [tenantId]
+      )
+    ).rows;
+    return {
+      tenant: row.slug as string,
+      documentTypes: types
+        .map((t) => ({
+          key: t.key as string,
+          name: t.name as string,
+          description: (t.description as string | null) ?? null,
+          fields: ((t.fields ?? []) as Array<{ displayLabel?: string; semanticKey: string; extraction?: unknown }>)
+            .filter((f) => f.extraction)
+            .map((f) => f.displayLabel || f.semanticKey),
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+      enabled: Boolean(row.enabled),
+      defaultDocumentType: (row.default_type as string | null) ?? null,
+      submissionPage: `/in/${row.slug}`,
+      apiEndpoint: `/api/in/${row.slug}/documents`,
+    };
+  });
 }
 
-export async function configureIngress(ctx: Ctx, actor: Actor, input: { tenantId: string; key: string; kind: string; name: string; documentType?: string; enabled?: boolean }) {
+export async function configureIngress(ctx: Ctx, actor: Actor, input: { tenantId: string; defaultDocumentType?: string | null; enabled?: boolean }) {
   return withTenant(ctx.db, input.tenantId, async (tx) => {
-    const typeId = input.documentType
-      ? (await tx.query('SELECT id FROM document_types WHERE tenant_id = $1 AND key = $2', [input.tenantId, input.documentType])).rows[0]?.id
+    const typeId = input.defaultDocumentType
+      ? (await tx.query('SELECT id FROM document_types WHERE tenant_id = $1 AND key = $2', [input.tenantId, input.defaultDocumentType])).rows[0]?.id
       : null;
-    if (input.documentType && !typeId) throw new DomainError('INVALID_INPUT', `Unknown document type "${input.documentType}".`);
+    if (input.defaultDocumentType && !typeId) throw new DomainError('INVALID_INPUT', `Unknown document type "${input.defaultDocumentType}".`);
     await tx.query(
-      `INSERT INTO ingress_endpoints (tenant_id, key, kind, name, default_document_type_id, enabled) VALUES ($1,$2,$3,$4,$5,$6)
-       ON CONFLICT (tenant_id, key) DO UPDATE SET kind = EXCLUDED.kind, name = EXCLUDED.name,
-         default_document_type_id = EXCLUDED.default_document_type_id, enabled = EXCLUDED.enabled`,
-      [input.tenantId, input.key, input.kind, input.name, typeId, input.enabled ?? true]
+      `UPDATE ingress_endpoints SET default_document_type_id = CASE WHEN $2::boolean THEN $3::uuid ELSE default_document_type_id END,
+              enabled = coalesce($4, enabled)
+       WHERE tenant_id = $1 AND key = 'main'`,
+      [input.tenantId, input.defaultDocumentType !== undefined, typeId, input.enabled ?? null]
     );
     await audit(tx, { tenantId: input.tenantId, actor, action: 'ingress.configured', subjectType: 'tenant', subjectId: input.tenantId, detail: input });
-    return { key: input.key, enabled: input.enabled ?? true };
-  });
+  }).then(() => ingressInfo(ctx, input.tenantId));
 }
