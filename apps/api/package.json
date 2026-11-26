@@ -1,0 +1,28 @@
+{
+  "name": "@lomi/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsup src/index.ts --format esm --sourcemap --watch --onSuccess \"node dist/index.js\"",
+    "build": "tsup src/index.ts --format esm --sourcemap --clean",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@lomi/core": "workspace:*",
+    "@lomi/pdf": "workspace:*"
+  },
+  "devDependencies": {
+    "@lomi/config": "workspace:*",
+    "@types/node": "^22.10.0",
+    "eslint": "^9.17.0",
+    "pdf-lib": "^1.17.1",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2",
+    "vitest": "^3.2.4"
+  }
+}

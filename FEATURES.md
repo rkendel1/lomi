@@ -1,5 +1,10 @@
 # PDF Field Mapper - Feature Summary
 
+> **Repository note:** this document describes product behavior from the original
+> single-package app. The code now lives in the Turborepo packages
+> (`packages/core`, `packages/pdf`, `apps/web`, `apps/api`); file paths below refer
+> to the historical layout.
+
 ## Core Features (Initial Implementation)
 
 ### Visual PDF Mapping
@@ -83,20 +88,20 @@
 - All fields re-populate with original coordinates/types/names
 - Continue editing without starting over
 
-**Use case:** Update existing ACORD form schemas when revisions occur
+**Use case:** Update existing form schemas when revisions occur
 
 ### 6. Named Field Templates ✨
-**What:** Pre-built field name library for common ACORD forms
+**What:** Pre-built field name library for common form fields
 **How to use:**
 - Select a field in the canvas
 - In FieldEditor sidebar, click "📚 Field Templates"
-- Search or filter by form type (ACORD 125, 126, 130, All)
+- Search or filter by form type
 - Click a template to apply name + type to selected field
 
 **Included templates:**
-- **ACORD 125:** insuredName, effectiveDate, generalLiabilityLimit, etc.
-- **ACORD 126:** applicantName, businessDescription, annualRevenue, etc.
-- **ACORD 130:** propertyAddress, buildingValue, deductible, etc.
+- fullName, dateOfBirth, coverageLimit, etc.
+- businessName, taxId, annualRevenue, etc.
+- streetAddress, city, state, zip, etc.
 
 ### 7. Overflow Risk Highlighting ✨
 **What:** Visual warnings for fields that are too narrow for their type
@@ -126,7 +131,7 @@
 ### New Utilities
 - `src/utils/ocr.ts` — Text extraction, label inference, camelCase conversion
 - `src/utils/grid.ts` — Snap-to-grid coordinate rounding
-- `src/utils/templates.ts` — ACORD field template library
+- `src/utils/templates.ts` — field name template library
 - `src/utils/validation.ts` — Overflow risk detection
 
 ### New Components
@@ -158,7 +163,7 @@
 ### Scenario 3: Auto-Detect + Templates (Fastest)
 1. Upload PDF with embedded form fields
 2. Enable "Auto-detect" checkbox → fields pre-populated
-3. Select field, use "📚 Field Templates" to apply standard ACORD names
+3. Select field, use "📚 Field Templates" to apply standard names
 4. Export schema
 
 ### Scenario 4: Iterative Refinement

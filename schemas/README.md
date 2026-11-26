@@ -6,26 +6,15 @@ This directory contains versioned schemas for PDF forms.
 
 ```
 schemas/
-├── acord-126/
-│   └── v1/
-│       ├── layout.json
-│       ├── mapping.json
-│       └── transforms.json
-├── acord-125/
-│   └── v1/
-│       ├── layout.json
-│       ├── mapping.json
-│       └── transforms.json
-└── acord-130/
-    └── v1/
-        ├── layout.json
-        ├── mapping.json
-        └── transforms.json
+└── v1/
+    ├── layout.json
+    ├── mapping.json
+    └── transforms.json
 ```
 
 ## Why Versioned Storage?
 
-1. **ACORD forms change**: Insurance forms get updated periodically
+1. **Forms change**: PDF templates get updated periodically
 2. **Carriers modify PDFs**: Different carriers may have slightly different versions
 3. **Rollback capability**: You can revert to a previous schema if needed
 4. **Audit trail**: Track changes over time
@@ -51,14 +40,19 @@ Contains field coordinates, sizes, types, and rendering properties.
 ```
 
 ### mapping.json
-Maps data paths to form fields.
+Maps canonical semantic keys to physical PDF fields.
 
 ```json
 {
-  "applicant.name": {
-    "target": "applicantName",
-    "transform": []
-  }
+  "artifactType": "field-mapping",
+  "version": "1.0",
+  "mappings": [
+    {
+      "id": "mapping_001",
+      "semanticKey": "applicant.name",
+      "binding": { "fieldId": "field_001", "sourceId": "applicantName" }
+    }
+  ]
 }
 ```
 
@@ -82,16 +76,15 @@ Defines field-level formatters.
 Load schemas into the form registry:
 
 ```typescript
-import { formRegistry } from './registry/FormRegistry';
+import { formRegistry } from '@lomi/pdf';
 
-// Load ACORD 126 v1
 const schema = {
-  layout: require('./schemas/acord-126/v1/layout.json'),
-  mapping: require('./schemas/acord-126/v1/mapping.json'),
-  transforms: require('./schemas/acord-126/v1/transforms.json'),
+  layout: require('./schemas/v1/layout.json'),
+  mapping: require('./schemas/v1/mapping.json'),
+  transforms: require('./schemas/v1/transforms.json'),
 };
 
-await formRegistry.loadFromFiles('acord-126', 'ACORD 126', 'v1', schema);
+await formRegistry.loadFromFiles('generic-form', 'Generic Form', 'v1', schema);
 ```
 
 ## Best Practices

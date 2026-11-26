@@ -1,5 +1,10 @@
 # Phase 2 & 3 Enhancements - Implementation Guide
 
+> **Repository note:** this guide describes the original single-package
+> implementation. Current code is split across `packages/core` (domain/schema),
+> `packages/pdf` (renderer/formatters/registry), `apps/web` (React UI), and
+> `apps/api` (server rendering). Paths below refer to the historical layout.
+
 This document describes the major enhancements implemented for the PDF Field Mapper tool.
 
 ## Phase 2: Schema-Driven Rendering Engine
@@ -183,21 +188,14 @@ Schemas are now treated as versioned assets:
 
 ```
 schemas/
-├── acord-126/
-│   └── v1/
-│       ├── layout.json
-│       ├── mapping.json
-│       └── transforms.json
-├── acord-125/
-│   └── v1/
-│       └── ...
-└── acord-130/
-    └── v1/
-        └── ...
+└── v1/
+    ├── layout.json
+    ├── mapping.json
+    └── transforms.json
 ```
 
 **Why versioning matters**:
-- ACORD forms change over time
+- Forms change over time
 - Carriers modify PDFs
 - Rollback capability
 - Audit trail
@@ -219,14 +217,14 @@ import { formRegistry } from './registry/FormRegistry';
 
 // Register a form
 await formRegistry.loadFromFiles(
-  'acord-126',
-  'ACORD 126',
+  'generic-form',
+  'Generic Form',
   'v1',
   schemaData
 );
 
 // Retrieve a form
-const form = formRegistry.getForm('acord-126');
+const form = formRegistry.getForm('generic-form');
 
 // List all forms
 const allForms = formRegistry.listForms();
@@ -305,7 +303,7 @@ npm test
                 ↓
 ┌─────────────────────────────────────────────────┐
 │           Filled PDF Forms                      │
-│  ACORD 125, 126, 130, etc.                      │
+│  Generic form output                            │
 └─────────────────────────────────────────────────┘
 ```
 
@@ -324,11 +322,11 @@ npm test
 ### 2. Register Form
 ```typescript
 import { formRegistry } from './registry/FormRegistry';
-import layoutJson from './schemas/acord-126/v1/layout.json';
-import mappingJson from './schemas/acord-126/v1/mapping.json';
-import transformsJson from './schemas/acord-126/v1/transforms.json';
+import layoutJson from './schemas/v1/layout.json';
+import mappingJson from './schemas/v1/mapping.json';
+import transformsJson from './schemas/v1/transforms.json';
 
-await formRegistry.loadFromFiles('acord-126', 'ACORD 126', 'v1', {
+await formRegistry.loadFromFiles('generic-form', 'Generic Form', 'v1', {
   layout: layoutJson,
   mapping: mappingJson,
   transforms: transformsJson
@@ -341,7 +339,7 @@ import { generateForm } from './registry/formGenerator';
 
 const result = await generateForm(
   {
-    formType: 'acord-126',
+    formType: 'generic-form',
     data: {
       applicant: {
         name: 'John Doe',
@@ -477,5 +475,5 @@ For issues or questions:
 ---
 
 **Status**: ✅ All Phase 2 & 3 items implemented and tested
-**Test Coverage**: 54 passing tests
+**Test Coverage**: 104 passing tests
 **Build Status**: ✅ Successful
