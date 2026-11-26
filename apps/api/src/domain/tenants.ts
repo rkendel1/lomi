@@ -105,8 +105,26 @@ export async function ingressInfo(ctx: Ctx, tenantId: string) {
       )
     ).rows[0];
     if (!row) throw notFound('Tenant');
+    const types = (
+      await tx.query(
+        `SELECT DISTINCT ON (dt.id) dt.key, dt.name, dt.description, tv.definition->'fields' AS fields
+         FROM document_types dt JOIN template_versions tv ON tv.document_type_id = dt.id AND tv.status = 'published'
+         WHERE dt.tenant_id = $1 ORDER BY dt.id, tv.version DESC`,
+        [tenantId]
+      )
+    ).rows;
     return {
       tenant: row.slug as string,
+      documentTypes: types
+        .map((t) => ({
+          key: t.key as string,
+          name: t.name as string,
+          description: (t.description as string | null) ?? null,
+          fields: ((t.fields ?? []) as Array<{ displayLabel?: string; semanticKey: string; extraction?: unknown }>)
+            .filter((f) => f.extraction)
+            .map((f) => f.displayLabel || f.semanticKey),
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
       enabled: Boolean(row.enabled),
       defaultDocumentType: (row.default_type as string | null) ?? null,
       submissionPage: `/in/${row.slug}`,

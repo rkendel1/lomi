@@ -531,7 +531,8 @@ export async function valuesForVersion(tx: Tx, versionId: string) {
 
   return values.map((v) => {
     const myChecks = checks.filter((c) => c.value_id === v.id);
-    const failing = myChecks.filter((c) => c.outcome === 'fail');
+    // Anything a person should look at: failed checks and model checks that were not confident enough.
+    const failing = myChecks.filter((c) => c.outcome === 'fail' || c.outcome === 'uncertain' || c.outcome === 'error');
     const state =
       v.review_state === 'pending' ? (v.disposition === 'gap' ? 'gap' : 'pending') : v.disposition === 'auto_approved' && v.review_state === 'approved' ? 'auto_approved' : v.review_state;
     return {

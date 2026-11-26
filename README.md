@@ -26,7 +26,8 @@ npm packages, and a one-time download of the local Laya model, ~1 min).
 docker compose up --build
 ```
 
-Open <http://localhost:3000> and pick a demo identity. The stack:
+Open <http://localhost:3000> and choose a workspace — **Lomi Operations**,
+**Customer review** or **Document submission** — then a demo identity. The stack:
 
 | Service | Purpose |
 | --- | --- |
@@ -58,7 +59,8 @@ published templates for an invoice, a lease excerpt and a market report, and:
 
 | Sign in as | Sees |
 | --- | --- |
-| Riley Reviewer (Lakeside) | Lakeside documents; review, correct, generate |
+| Pat Payables (Lakeside submitter) | Lakeside's intake page: submit one or many PDFs and follow them; cannot review |
+| Riley Reviewer (Lakeside) | Lakeside review queue; review, correct, generate |
 | Avery Admin (Lakeside) | plus Lakeside operations and model-processing authorization |
 | Sam Reviewer (Summit) | Summit only |
 | Olivia Ops (Lomi operator) | all customers, Operations, Schema Studio |
@@ -67,6 +69,43 @@ Demo identities exist only because `LOMI_DEV_LOGIN=1` in `docker-compose.yml`.
 Their tokens are well-known development values; never seed or enable them in
 production. An agent identity (`dev-lakeside-agent`, delegated by Riley) can be
 used against the API/MCP to see agent limits.
+
+### Customer intake URL
+
+Every customer has exactly one intake URL. People open
+`http://localhost:3000/in/lakeside` to upload; systems post to
+`/api/in/lakeside/documents`. The same endpoint accepts:
+
+| Submission | How |
+| --- | --- |
+| Electronic (API) | `application/pdf` body (`?documentType=invoice&filename=…`) or JSON `{filename, contentBase64}` |
+| Single upload | `multipart/form-data` with one `file` part |
+| Bulk upload | `multipart/form-data` with several `file` parts, or JSON `{documents: [...]}` (≤100); each file is accepted or rejected on its own |
+
+```bash
+curl -s -X POST -H 'Authorization: Bearer dev-lakeside-submitter' \
+  -F documentType=invoice -F file=@a.pdf -F file=@b.pdf http://localhost:4000/api/in/lakeside/documents
+```
+
+Processing starts immediately: the API publishes the committed job as soon as
+the submission is stored (the outbox and worker remain the guarantee if that
+fails). In the demo stack a bulk upload of three invoices is checked and
+waiting for review in under two seconds. The caller's token decides access: a
+Lakeside submitter posting to `/api/in/summit/…` gets `404`.
+
+### Reviewing
+
+**Start reviewing** opens the oldest document waiting for a decision. The left
+pane switches between **Original** (the PDF exactly as received, no overlays)
+and **Evidence** (where the selected field was found). **Approve all verified**
+approves every field whose evidence was verified and whose checks raised
+nothing; flagged and missing fields stay for individual decisions. When the
+last field is decided, the next document waiting for review opens immediately.
+
+### API reference
+
+OpenAPI 3.1: <http://localhost:4000/api/openapi.json>, rendered at
+<http://localhost:4000/api/docs> (or via the web proxy at `:3000/api/docs`).
 
 ### Try the API
 
@@ -101,8 +140,10 @@ scripts/resilience-check.sh
 
 Kills the worker with SIGKILL mid-processing and verifies recovery (takes about
 two minutes, bounded by the job lease), then FLUSHALLs and restarts Redis and
-verifies nothing was lost. `node scripts/ui-smoke.cjs` drives the UI in a
-headless browser (needs Playwright).
+verifies nothing was lost. `node scripts/ui-smoke.cjs` and
+`node scripts/ui-workflows.cjs <shots-dir> <pdf-dir>` drive the UI in a headless
+browser (need Playwright): sign-in workspaces, bulk submission, review with
+auto-advance, operator customer selection, Schema Studio, API reference.
 
 ---
 
@@ -140,8 +181,8 @@ skipped. No test calls a paid model API.
 | `packages/core` | 58 | coordtool field model and schema generation |
 | `packages/pdf` | 49 | rendering, formatters, text extraction, deterministic output |
 | `packages/docops` | 19 | evidence verification, extraction, validation, disposition, carry-over |
-| `apps/api` | 35 | providers (incl. real Laya), workflow, durability with real Redis, REST/AppPort/MCP and tenant isolation, end-to-end |
-| `apps/web` | 4 | mapper standalone/embedded, sign-in |
+| `apps/api` | 41 | providers (incl. real Laya), workflow, durability with real Redis, REST/AppPort/MCP and tenant isolation, intake URL (single/bulk/JSON, immediate processing), review-all and next, OpenAPI routes, end-to-end |
+| `apps/web` | 4 | mapper standalone/embedded, sign-in workspaces |
 
 Run the API and worker outside Docker after `pnpm build`:
 `node apps/api/dist/index.js` and `node apps/api/dist/worker.js` (see

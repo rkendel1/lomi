@@ -91,12 +91,12 @@ and outcome.
 ## 5. AppPort: one capability boundary
 
 All application operations are AppPort capabilities (`apps/api/src/capabilities/app.ts`,
-27 capabilities, `@appport/*` pinned at core 1.13.0 / server 1.5.0 / mcp 1.5.0).
+30 capabilities, `@appport/*` pinned at core 1.13.0 / server 1.5.0 / mcp 1.5.0).
 The same application object serves:
 
 | Surface | Path | Notes |
 | --- | --- | --- |
-| REST | `/api/documents`, `/api/values/:id/review`, … | thin adapters calling `handleRequest` |
+| REST | `/api/in/{tenant}/documents`, `/api/documents`, `/api/values/:id/review`, … | thin adapters calling `handleRequest`; documented in OpenAPI 3.1 (`/api/openapi.json`, `/api/docs`) |
 | AppPort HTTP binding | `/api/appport`, `/api/appport/manifest`, `/.well-known/appport` | AppPort's own server binding |
 | MCP | `/api/mcp` | `@appport/mcp`; tools are projected from the manifest |
 | Web UI | uses `/api/appport` | same envelopes as any client |
@@ -149,6 +149,25 @@ Four separate document assets:
 Objects (originals, base PDFs, outputs) are stored content-addressed under a
 tenant prefix in a filesystem store (a Docker volume locally); PostgreSQL
 holds metadata and hashes, and reads verify the hash.
+
+## 6a. Ingress (migration 002)
+
+Each tenant has exactly one ingress, its **tenant URL**: `/in/{tenant}` for
+people and `POST /api/in/{tenant}/documents` for systems. It accepts electronic
+submissions (raw PDF or JSON), single uploads and bulk uploads (multipart with
+many `file` parts, or a JSON batch of up to 100). Every receipt records its
+channel (`api`, `upload`, `bulk`) and, for bulk, a batch id. Email and SFTP
+ingress kinds were removed. The tenant comes from the URL; the caller's token
+must belong to that tenant (submitter, reviewer or admin), otherwise `404`.
+
+**Processing starts immediately.** After the submission transaction commits,
+the API publishes the outbox events itself (`dispatchNow`, best effort, with a
+2 s Redis timeout so an outage never holds database locks). If that fails the
+worker's dispatcher and reconciler still deliver the work. The worker loads
+Laya at startup so the first document has no cold start. Measured on the demo
+stack: three bulk-uploaded invoices reached "Ready for review" 1.6 s after
+submission, including Laya checks. Verified by a test that fails when
+immediate dispatch is disabled.
 
 ## 7. Processing, durability and recovery
 
@@ -273,6 +292,21 @@ prompt version; raw prompt/response for Lomi operators only), every decision
 with actor and authority, and generated outputs with snapshot hash, base PDF
 hash and renderer version.
 
+## 11a. Review flow
+
+- `documents.next` returns the oldest document with fields waiting for a human
+  decision. The UI opens it when the reviewer finishes a document, with no
+  return to the list.
+- `values.verified.approve` approves every pending value whose evidence was
+  verified and whose checks raised nothing (no fail/uncertain/error); each is
+  recorded as an individual human decision. Gaps and flagged values remain.
+- The review screen separates the **original** (unmodified PDF, no overlays)
+  from the **evidence** view (only the selected field's location highlighted).
+  Highlights are at PDF text-item granularity, so a box can cover the whole
+  line that contains the quote.
+- When most of a document's fields are missing, Lomi warns that it may not be
+  the selected document type.
+
 ## 12. Operational visibility
 
 Derived from persisted records (`operations.stats`): received, processed, in
@@ -298,7 +332,8 @@ attention list. Workers report provider readiness to PostgreSQL.
 
 - Lease heartbeat renewal; S3-compatible object store; streaming progress.
 - Integration destinations (webhooks/ERP delivery) — schema and UI not built.
-- Bulk historical ingestion; email/SFTP ingress (endpoints can be configured, no receivers).
+- Automatic document-type detection at intake (submitters choose the type; a
+  wrong-type warning appears when most fields are missing).
 - AppPort approval/delegation primitives; MCP OAuth (bearer tokens only).
 - Retention/archival policies for raw model I/O and originals.
 - Template field-level diffing between versions in Studio.

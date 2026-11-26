@@ -210,13 +210,19 @@ export function buildApplication(ctx: Ctx): AppPortApplication {
     cap({
       name: 'ingress.get', description: "The tenant's ingress URL (one URL for API, single and bulk submissions).", permissions: ['documents.read'], effect: 'observation',
       input: s.object({ tenant }),
-      output: s.object({ tenant: s.string(), enabled: s.boolean(), defaultDocumentType: s.nullable(s.string()), submissionPage: s.string(), apiEndpoint: s.string() }),
+      output: s.object({
+        tenant: s.string(), enabled: s.boolean(), defaultDocumentType: s.nullable(s.string()), submissionPage: s.string(), apiEndpoint: s.string(),
+        documentTypes: s.array(s.object({ key: s.string(), name: s.string(), description: s.nullable(s.string()), fields: s.array(s.string()) })),
+      }),
       run: async (_i, c) => ingressInfo(ctx, c.tenantId),
     }),
     cap({
       name: 'ingress.configure', description: "Enable/disable the tenant's ingress and set its default document type.", permissions: ['lomi.ingress.manage'], effect: 'consequential',
       input: s.object({ tenant, defaultDocumentType: s.optional(s.nullable(s.string())), enabled: s.optional(s.boolean()) }),
-      output: s.object({ tenant: s.string(), enabled: s.boolean(), defaultDocumentType: s.nullable(s.string()), submissionPage: s.string(), apiEndpoint: s.string() }),
+      output: s.object({
+        tenant: s.string(), enabled: s.boolean(), defaultDocumentType: s.nullable(s.string()), submissionPage: s.string(), apiEndpoint: s.string(),
+        documentTypes: s.array(s.object({ key: s.string(), name: s.string(), description: s.nullable(s.string()), fields: s.array(s.string()) })),
+      }),
       run: async ({ tenant: _t, ...rest }, c) => configureIngress(ctx, c.actor, { tenantId: c.tenantId, ...rest }),
     }),
 

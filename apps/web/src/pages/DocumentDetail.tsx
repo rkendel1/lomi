@@ -38,6 +38,7 @@ interface DocumentView {
   statusLabel: string;
   nextAction: string;
   failureReason: string | null;
+  warning: string | null;
   progress: Progress | null;
   documentType: { key: string; name: string };
   currentVersion: { id: string; number: number };
@@ -61,18 +62,40 @@ export const DocumentDetail: React.FC<{ tenant: string; documentId: string; me: 
   const [tab, setTab] = useState<'values' | 'versions' | 'history' | 'outputs'>('values');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [view, setView] = useState<'evidence' | 'original'>('evidence');
+  const [flash, setFlash] = useState<string | null>(() => {
+    try {
+      const f = sessionStorage.getItem('lomi.flash');
+      sessionStorage.removeItem('lomi.flash');
+      return f;
+    } catch {
+      return null;
+    }
+  });
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (): Promise<DocumentView | null> => {
     try {
       const d = await call<DocumentView>('documents.get', { tenant, documentId, ...(versionId ? { versionId } : {}) });
       setDoc(d);
       setError(null);
+      return d;
     } catch (e) {
       setError((e as Error).message);
+      return null;
     }
   }, [tenant, documentId, versionId]);
 
   useEffect(() => void load(), [load]);
+
+  // Open on the first field that needs a decision, with its evidence highlighted.
+  useEffect(() => {
+    if (!doc || selected) return;
+    const first = doc.values.find((v) => v.needsAttention) ?? doc.values[0];
+    if (first) {
+      setSelected(first.id);
+      if (first.evidence) setPage(first.evidence.page + 1);
+    }
+  }, [doc, selected]);
   useEffect(() => {
     if (!doc) return;
     const pendingOutput = doc.generated.some((g) => g.status === 'pending');
@@ -92,14 +115,14 @@ export const DocumentDetail: React.FC<{ tenant: string; documentId: string; me: 
   // Evidence boxes rendered by coordtool's PDF viewer (read-only).
   const evidenceFields = useMemo<Field[]>(
     () =>
-      (doc?.values ?? [])
+      (view === 'original' ? [] : (doc?.values ?? []).filter((v) => v.id === selected))
         .filter((v) => v.evidence?.box)
         .map((v) => ({
           id: v.id, name: v.semanticKey, sourceFieldId: v.semanticKey, semanticKey: v.semanticKey, displayLabel: v.label,
           page: v.evidence!.page, x: v.evidence!.box!.x - 2, y: v.evidence!.box!.y - 3, width: v.evidence!.box!.width + 4, height: v.evidence!.box!.height + 5,
           type: 'text' as const,
         })),
-    [doc]
+    [doc, view, selected]
   );
 
   const select = (v: ValueView) => {
@@ -107,11 +130,37 @@ export const DocumentDetail: React.FC<{ tenant: string; documentId: string; me: 
     if (v.evidence) setPage(v.evidence.page + 1);
   };
 
+  /** When a document has nothing left to decide, open the next one waiting for review straight away. */
+  const advance = async (finished: DocumentView) => {
+    const next = await call<{ documentId: string | null; title: string | null; remaining: number }>('documents.next', { tenant, after: documentId });
+    const done = `“${finished.title}” is fully reviewed${finished.status === 'approved' ? ' and approved' : ''}.`;
+    if (next.documentId) {
+      try {
+        sessionStorage.setItem('lomi.flash', `${done} Now reviewing “${next.title}” (${next.remaining} waiting).`);
+      } catch {
+        /* the note is optional */
+      }
+      window.location.hash = `/documents/${next.documentId}`;
+    } else {
+      setFlash(`${done} Nothing else is waiting for review.`);
+    }
+  };
+
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true);
     try {
+      const wasOpen = doc?.progress ? doc.progress.pending + doc.progress.gaps : 0;
       await fn();
-      await load();
+      const d = await load();
+      if (d && d.viewing.isCurrent && wasOpen > 0 && d.progress && d.progress.pending + d.progress.gaps === 0) await advance(d);
+      else if (d) {
+        // Move the selection to the next field that still needs a decision.
+        const next = [...d.values].find((v) => v.needsAttention);
+        if (next) {
+          setSelected(next.id);
+          if (next.evidence) setPage(next.evidence.page + 1);
+        }
+      }
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -122,6 +171,10 @@ export const DocumentDetail: React.FC<{ tenant: string; documentId: string; me: 
   if (!doc) return <div className="page">{error ? <div className="error">{error}</div> : 'Loading…'}</div>;
   const canReview = can(me, tenant, 'reviews.decide') && doc.viewing.isCurrent && doc.viewing.processingStatus === 'processed';
   const ordered = [...doc.values].sort((a, b) => Number(b.needsAttention) - Number(a.needsAttention));
+  const verifiedCount = doc.values.filter(
+    (v) => v.needsAttention && v.state !== 'gap' && v.evidence && !v.checks.some((c) => ['fail', 'uncertain', 'error'].includes(c.outcome))
+  ).length;
+  const openCount = doc.progress ? doc.progress.pending + doc.progress.gaps : 0;
   const latestOutput = doc.generated.find((g) => g.documentVersion === doc.currentVersion.number && g.status === 'succeeded');
 
   return (
@@ -151,7 +204,8 @@ export const DocumentDetail: React.FC<{ tenant: string; documentId: string; me: 
           </div>
         </div>
       </div>
-      {doc.progress && <ProgressCounts progress={doc.progress} />}
+      {flash && <div className="flash" role="status">{flash}</div>}
+      {doc.warning && <div className="error">{doc.warning}</div>}
       {doc.related.length > 0 && (
         <div className="notice">
           Possibly the same transaction as{' '}
@@ -164,14 +218,27 @@ export const DocumentDetail: React.FC<{ tenant: string; documentId: string; me: 
       {error && <div className="error">{error}</div>}
 
       <div className="detail-body">
-        <section className="detail-viewer" aria-label="Original document">
+        <section className={`detail-viewer view-${view}`} aria-label={view === 'original' ? 'Original document' : 'Evidence view'}>
+          <div className="pane-head">
+            <div className="seg-control" role="tablist" aria-label="Document view">
+              <button role="tab" aria-selected={view === 'original'} className={view === 'original' ? 'active' : ''} onClick={() => setView('original')}>Original</button>
+              <button role="tab" aria-selected={view === 'evidence'} className={view === 'evidence' ? 'active' : ''} onClick={() => setView('evidence')}>Evidence</button>
+            </div>
+            <span className="pane-caption">
+              {view === 'original'
+                ? `As received · version ${doc.viewing.number} · ${doc.viewing.filename} · unmodified`
+                : (() => {
+                    const v = doc.values.find((x) => x.id === selected);
+                    return v?.evidence ? `Where “${v.label}” was found (page ${v.evidence.page + 1})` : v ? `“${v.label}” has no evidence in this document` : 'Select a field to see where it was found';
+                  })()}
+            </span>
+          </div>
           {file ? (
             <PDFViewer
               file={file}
               fields={evidenceFields}
               selectedId={selected}
               debugMode={false}
-              showFieldOverlays
               defaultType="text"
               currentPage={page}
               totalPages={doc.viewing.pageCount ?? 1}
@@ -187,13 +254,28 @@ export const DocumentDetail: React.FC<{ tenant: string; documentId: string; me: 
               }}
               readOnly
               highlightColor="rgba(255, 196, 0, 0.45)"
+              showFieldOverlays={view === 'evidence'}
             />
           ) : (
             <div className="empty">Loading document…</div>
           )}
         </section>
 
-        <section className="detail-side">
+        <section className="detail-side" aria-label="Review">
+          <div className="pane-head review-head">
+            <div>
+              <h2>Review</h2>
+              {doc.progress && <ProgressCounts progress={doc.progress} />}
+            </div>
+            {canReview && openCount > 0 && (
+              <button className="btn-primary" disabled={busy || verifiedCount === 0} title="Approves each pending field whose evidence was verified and whose checks raised nothing. Flagged and missing fields stay for you." onClick={() => act(() => call('values.verified.approve', { tenant, documentId }))}>
+                Approve all verified ({verifiedCount})
+              </button>
+            )}
+            {canReview && openCount === 0 && doc.status !== 'completed' && (
+              <button onClick={() => void advance(doc)}>Next document →</button>
+            )}
+          </div>
           <div className="tabs" role="tablist">
             {(['values', 'versions', 'history', 'outputs'] as const).map((t) => (
               <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>

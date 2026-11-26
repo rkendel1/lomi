@@ -47,13 +47,15 @@ export interface MapperProps {
   headerExtra?: React.ReactNode;
   title?: string;
   subtitle?: string;
+  /** Hosted inside Schema Studio: no standalone header, export or capability controls. */
+  embedded?: boolean;
 }
 
 /**
  * coordtool's visual field mapper. Used standalone (no props) and inside
  * Schema Studio, where it edits a tenant's template version.
  */
-export function Mapper({ initialFile = null, initialFields, onFieldsChange, headerExtra, title = 'PDF Field Mapper', subtitle = 'Visual overlay → schema generator' }: MapperProps = {}) {
+export function Mapper({ initialFile = null, initialFields, onFieldsChange, headerExtra, embedded = false, title = 'PDF Field Mapper', subtitle = 'Visual overlay → schema generator' }: MapperProps = {}) {
   const [pdfFile, setPdfFile] = useState<File | null>(initialFile);
   const [totalPages, setTotalPages] = useState(1);
   const [currentPage, setCurrentPage] = useState(1);
@@ -185,20 +187,8 @@ export function Mapper({ initialFile = null, initialFields, onFieldsChange, head
     ));
   }, []);
 
-  return (
-    <div className="app">
-      <header className="app-header">
-        <div className="app-header-left">
-          <span className="app-logo">📐</span>
-          <div>
-            <h1 className="app-title">{title}</h1>
-            <p className="app-sub">{subtitle}</p>
-          </div>
-        </div>
-        <div className="app-header-right">
-          {headerExtra}
-          {pdfFile && (
-            <>
+  const drawingControls = (
+    <>
               <label className="ctrl-label">Draw as:</label>
               <select
                 className="ctrl-select"
@@ -212,16 +202,6 @@ export function Mapper({ initialFile = null, initialFields, onFieldsChange, head
                 ))}
               </select>
 
-              <label className="ctrl-label">Capability (inferred):</label>
-              <input
-                className="ctrl-select"
-                type="text"
-                value={capabilityId}
-                onChange={(e) => setCapabilityId(e.target.value)}
-                placeholder="document.example"
-                title="Used for manifest/mapping/questions capability ids and target prefixes"
-              />
-              
               <label className="ctrl-label">Grid:</label>
               <select
                 className="ctrl-select"
@@ -286,29 +266,11 @@ export function Mapper({ initialFile = null, initialFields, onFieldsChange, head
                 </button>
               </div>
 
-              <ExportPanel
-                fields={fields}
-                templateFile={pdfFile}
-                capabilityId={capabilityId}
-                compact
-              />
-              
-              <button
-                className="ctrl-reset"
-                onClick={() => {
-                  setPdfFile(null);
-                  setFields([]);
-                  setSelectedId(null);
-                }}
-              >
-                Upload new PDF
-              </button>
-            </>
-          )}
-        </div>
-      </header>
+    </>
+  );
 
-      <main className="app-body">
+  const workspace = (
+    <>
         {!pdfFile ? (
           <div className="upload-wrap">
             <PDFUploader onFileLoaded={handleFileLoaded} />
@@ -387,7 +349,67 @@ export function Mapper({ initialFile = null, initialFields, onFieldsChange, head
             )}
           </div>
         )}
-      </main>
+    </>
+  );
+
+  if (embedded) {
+    // Inside Schema Studio: the host provides title and actions; only drawing controls are shown here.
+    return (
+      <div className="app app-embedded">
+        {pdfFile && <div className="mapper-toolbar">{drawingControls}{headerExtra}</div>}
+        <main className="app-body">{workspace}</main>
+      </div>
+    );
+  }
+
+  return (
+    <div className="app">
+      <header className="app-header">
+        <div className="app-header-left">
+          <span className="app-logo">📐</span>
+          <div>
+            <h1 className="app-title">{title}</h1>
+            <p className="app-sub">{subtitle}</p>
+          </div>
+        </div>
+        <div className="app-header-right">
+          {headerExtra}
+          {pdfFile && (
+            <>
+{drawingControls}
+              <label className="ctrl-label">Capability (inferred):</label>
+              <input
+                className="ctrl-select"
+                type="text"
+                value={capabilityId}
+                onChange={(e) => setCapabilityId(e.target.value)}
+                placeholder="document.example"
+                title="Used for manifest/mapping/questions capability ids and target prefixes"
+              />
+              
+              <ExportPanel
+                fields={fields}
+                templateFile={pdfFile}
+                capabilityId={capabilityId}
+                compact
+              />
+              
+              <button
+                className="ctrl-reset"
+                onClick={() => {
+                  setPdfFile(null);
+                  setFields([]);
+                  setSelectedId(null);
+                }}
+              >
+                Upload new PDF
+              </button>
+            </>
+          )}
+        </div>
+      </header>
+
+      <main className="app-body">{workspace}</main>
     </div>
   );
 }
