@@ -12,6 +12,14 @@ import { parseMultipart } from './multipart';
 import { API_DOCS_HTML, openApiDocument } from './openapi';
 import { HttpError, invoke, readBody, sendJson, tenantFor, toFetchRequest, writeFetchResponse } from './rest';
 
+/**
+ * REST speaks the brief's status vocabulary: `status` is the extraction status
+ * (queued | extracting | extracted | failed); the review state is `reviewStatus`.
+ */
+function restStatus<T extends { status: string; extractionStatus: string }>(doc: T) {
+  return { ...doc, status: doc.extractionStatus, reviewStatus: doc.status };
+}
+
 function bearer(headers: Readonly<Record<string, string | string[] | undefined>>): string | undefined {
   const value = headers['authorization'];
   const raw = Array.isArray(value) ? value[0] : value;
@@ -27,8 +35,10 @@ function bearer(headers: Readonly<Record<string, string | string[] | undefined>>
  */
 export function createDocOpsRoutes(ctx: Ctx) {
   const application = buildApplication(ctx);
+  // Development only (LOMI_DEV_DEFAULT_TOKEN): calls without a token act as that identity, so the
+  // brief's plain `curl` examples work against the demo stack. Never set it in production.
   const authenticate = async (headers: Readonly<Record<string, string | string[] | undefined>>): Promise<AuthenticatedIdentity | null> =>
-    authenticateToken(ctx.db, bearer(headers), APPLICATION_ID);
+    authenticateToken(ctx.db, bearer(headers) ?? ctx.config.devDefaultToken, APPLICATION_ID);
 
   const appport = createAppPortServer({
     application,
@@ -149,7 +159,7 @@ export function createDocOpsRoutes(ctx: Ctx) {
         tenant: tenantFor(req, url, identity),
         ...(q.search ? { search: q.search } : {}), ...(q.status ? { status: q.status } : {}), ...(q.documentType ? { documentType: q.documentType } : {}),
       });
-      sendJson(res, 200, result);
+      sendJson(res, 200, { items: result.items.map(restStatus) });
       return true;
     }
     if (req.method === 'POST' && (match = m(/^\/documents\/([0-9a-f-]{36})\/versions$/))) {
@@ -162,12 +172,22 @@ export function createDocOpsRoutes(ctx: Ctx) {
     if (req.method === 'GET' && (match = m(/^\/documents\/([0-9a-f-]{36})$/))) {
       const identity = await authenticate(req.headers);
       const versionId = url.searchParams.get('versionId');
-      sendJson(res, 200, await invoke(application, identity, 'documents.get', { tenant: tenantFor(req, url, identity), documentId: match[1], ...(versionId ? { versionId } : {}) }));
+      const doc = await invoke(application, identity, 'documents.get', { tenant: tenantFor(req, url, identity), documentId: match[1], ...(versionId ? { versionId } : {}) });
+      sendJson(res, 200, restStatus(doc));
       return true;
     }
     if (req.method === 'GET' && (match = m(/^\/documents\/([0-9a-f-]{36})\/progress$/))) {
       const identity = await authenticate(req.headers);
-      sendJson(res, 200, await invoke(application, identity, 'documents.progress', { tenant: tenantFor(req, url, identity), documentId: match[1] }));
+      const p = await invoke(application, identity, 'documents.progress', { tenant: tenantFor(req, url, identity), documentId: match[1] });
+      sendJson(res, 200, {
+        ...restStatus(p),
+        counts: { pending: p.progress.pending, approved: p.progress.approved + p.progress.autoApproved, corrected: p.progress.corrected, carriedOver: p.progress.carriedOver, gaps: p.progress.gaps },
+      });
+      return true;
+    }
+    if (req.method === 'POST' && (match = m(/^\/documents\/([0-9a-f-]{36})\/retry$/))) {
+      const identity = await authenticate(req.headers);
+      sendJson(res, 202, await invoke(application, identity, 'documents.retry', { tenant: tenantFor(req, url, identity), documentId: match[1] }));
       return true;
     }
     if (req.method === 'POST' && (match = m(/^\/values\/([0-9a-f-]{36})\/review$/))) {
@@ -205,22 +225,36 @@ export function createDocOpsRoutes(ctx: Ctx) {
   };
 
   async function uploadInput(req: IncomingMessage, url: URL) {
-    const body = await readBody(req, Math.ceil(MAX_UPLOAD_BYTES * 1.4) + 4096);
     const type = (req.headers['content-type'] ?? '').split(';')[0].trim();
+    if (type === 'multipart/form-data') {
+      // The brief's form: `type` (document type) + `file` (the PDF).
+      const { files, fields } = await parseMultipart(req, { fileBytes: MAX_UPLOAD_BYTES, files: 1 });
+      if (!files.length) throw new HttpError(400, 'Missing form field "file" (the PDF).');
+      const documentType = fields.type || fields.documentType || url.searchParams.get('documentType') || url.searchParams.get('type') || undefined;
+      return {
+        filename: files[0].filename,
+        contentBase64: files[0].bytes.toString('base64'),
+        ...(documentType ? { documentType } : {}),
+        ...(fields.title ? { title: fields.title } : {}),
+      };
+    }
+    const body = await readBody(req, Math.ceil(MAX_UPLOAD_BYTES * 1.4) + 4096);
     if (type === 'application/pdf') {
       const p = url.searchParams;
       return {
         filename: p.get('filename') ?? 'upload.pdf',
         contentBase64: body.toString('base64'),
-        ...(p.get('documentType') ? { documentType: p.get('documentType')! } : {}),
+        ...((p.get('documentType') ?? p.get('type')) ? { documentType: (p.get('documentType') ?? p.get('type'))! } : {}),
         ...(p.get('title') ? { title: p.get('title')! } : {}),
       };
     }
     if (type === 'application/json') {
       const json = JSON.parse(body.toString('utf8'));
       if (typeof json.contentBase64 !== 'string' || typeof json.filename !== 'string') throw new HttpError(400, 'JSON uploads need filename and contentBase64');
+      if (json.type && !json.documentType) json.documentType = json.type;
+      delete json.type;
       return json as { filename: string; contentBase64: string; documentType?: string; title?: string };
     }
-    throw new HttpError(415, 'Upload a PDF as application/pdf (with ?filename=&documentType=) or as JSON with contentBase64');
+    throw new HttpError(415, 'Upload multipart/form-data with fields type and file, application/pdf (with ?type=&filename=), or JSON with contentBase64');
   }
 }

@@ -47,6 +47,8 @@ interface DocumentView {
   values: ValueView[];
   generated: Array<{ id: string; status: string; sha256: string | null; templateVersion: number; documentVersion: number; error: string | null; createdAt: string }>;
   related: Array<{ documentId: string; title: string; reason: string }>;
+  receipts: { total: number; revisions: number; identicalResends: number; resendChannels: string[] };
+  receiptLog: Array<{ at: string; outcome: string; label: string; channel: string; filename: string; sha256: string; submittedBy: string | null }>;
   history: Array<{ at: string; action: string; actor: string; actorKind: string; detail: Record<string, unknown> }>;
 }
 
@@ -59,7 +61,7 @@ export const DocumentDetail: React.FC<{ tenant: string; documentId: string; me: 
   const [file, setFile] = useState<File | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [page, setPage] = useState(1);
-  const [tab, setTab] = useState<'values' | 'versions' | 'history' | 'outputs'>('values');
+  const [tab, setTab] = useState<'values' | 'versions' | 'receipts' | 'history' | 'outputs'>('values');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [view, setView] = useState<'evidence' | 'original'>('evidence');
@@ -194,6 +196,9 @@ export const DocumentDetail: React.FC<{ tenant: string; documentId: string; me: 
           <div className="next">Next: <strong>{doc.nextAction}</strong></div>
           {doc.failureReason && <div className="error small">{doc.failureReason}</div>}
           <div className="head-actions">
+            {doc.status === 'failed_operator' && can(me, tenant, 'documents.retry') && (
+              <button className="btn-primary" disabled={busy} onClick={() => act(() => call('documents.retry', { tenant, documentId }))}>Retry processing</button>
+            )}
             {doc.status === 'approved' && can(me, tenant, 'documents.generate') && (
               <button className="btn-primary" disabled={busy} onClick={() => act(() => call('documents.generate', { tenant, documentId }))}>Generate output</button>
             )}
@@ -206,13 +211,27 @@ export const DocumentDetail: React.FC<{ tenant: string; documentId: string; me: 
       </div>
       {flash && <div className="flash" role="status">{flash}</div>}
       {doc.warning && <div className="error">{doc.warning}</div>}
-      {doc.related.length > 0 && (
-        <div className="notice">
-          Possibly the same transaction as{' '}
-          {doc.related.map((r) => (
-            <a key={r.documentId} href={`#/documents/${r.documentId}`}>{r.title}</a>
-          ))}
-          : {doc.related[0].reason} Not merged — check before approving.
+      {(doc.related.length > 0 || doc.receipts.identicalResends > 0 || doc.receipts.revisions > 0) && (
+        <div className="dup-banner" role="note">
+          {doc.related.length > 0 && (
+            <div className="dup-line dup-warn">
+              <strong>Possible duplicate.</strong>{' '}
+              {doc.related.map((r, i) => (
+                <span key={r.documentId}>{i > 0 && ', '}<a href={`#/documents/${r.documentId}`}>{r.title}</a></span>
+              ))}{' '}
+              — {doc.related[0].reason} Not merged: check whether this is the same transaction before approving.
+            </div>
+          )}
+          {doc.receipts.identicalResends > 0 && (
+            <div className="dup-line">
+              <strong>Re-sent {doc.receipts.identicalResends}×.</strong> The identical file arrived again ({doc.receipts.resendChannels.join(', ')}); each receipt is recorded and nothing was reprocessed.
+            </div>
+          )}
+          {doc.receipts.revisions > 0 && (
+            <div className="dup-line">
+              <strong>Revised {doc.receipts.revisions}×.</strong> This is version {doc.currentVersion.number}; reviews whose evidence did not change were carried over.
+            </div>
+          )}
         </div>
       )}
       {error && <div className="error">{error}</div>}
@@ -277,9 +296,9 @@ export const DocumentDetail: React.FC<{ tenant: string; documentId: string; me: 
             )}
           </div>
           <div className="tabs" role="tablist">
-            {(['values', 'versions', 'history', 'outputs'] as const).map((t) => (
+            {(['values', 'versions', 'receipts', 'history', 'outputs'] as const).map((t) => (
               <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>
-                {t === 'values' ? `Fields (${doc.values.length})` : t[0].toUpperCase() + t.slice(1)}
+                {t === 'values' ? `Fields (${doc.values.length})` : t === 'receipts' ? `Receipts (${doc.receipts.total})` : t[0].toUpperCase() + t.slice(1)}
               </button>
             ))}
           </div>
@@ -312,6 +331,21 @@ export const DocumentDetail: React.FC<{ tenant: string; documentId: string; me: 
                   <span className="muted">{v.filename} · {new Date(v.receivedAt).toLocaleString()} · {v.processingStatus}{v.templateVersion ? ` · template v${v.templateVersion}` : ''}</span>
                   {v.failureReason && <div className="error small">{v.failureReason}</div>}
                   <div className="mono small muted">sha256 {v.sha256.slice(0, 16)}…</div>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {tab === 'receipts' && (
+            <ul className="list">
+              {doc.receiptLog.map((r, i) => (
+                <li key={i} className={`receipt receipt-${r.outcome}`}>
+                  <strong>{r.label}</strong>
+                  <div className="small muted">
+                    {new Date(r.at).toLocaleString()} · {r.channel === 'api' ? 'electronic (API)' : r.channel === 'bulk' ? 'bulk upload' : 'upload'} · {r.filename}
+                    {r.submittedBy && ` · ${r.submittedBy}`}
+                  </div>
+                  <div className="mono small muted">sha256 {r.sha256.slice(0, 16)}…</div>
                 </li>
               ))}
             </ul>

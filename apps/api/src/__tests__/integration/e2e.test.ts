@@ -8,6 +8,7 @@ import { startWorker, type WorkerHandles } from '../../jobs/queue';
 import { seedConfiguration } from '../../seed/seed';
 import { INVOICE_TEMPLATE, INVOICE_V1, INVOICE_V2, invoicePdf } from '../../seed/fixtures';
 import { q, setup } from './harness';
+import { PATTERN_TEMPLATES } from './harness';
 
 let ctx: Ctx;
 let server: Server;
@@ -49,7 +50,7 @@ async function waitFor(documentId: string, predicate: (p: any) => boolean, timeo
 beforeAll(async () => {
   ctx = await setup();
   ctx.config = { ...ctx.config, redisUrl: process.env.TEST_REDIS_URL ?? 'redis://localhost:6379/15', queuePrefix: `lomi-e2e-${Date.now()}` };
-  await seedConfiguration(ctx);
+  await seedConfiguration(ctx, { templates: PATTERN_TEMPLATES });
   server = createApiServer(createDocOpsRoutes(ctx));
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -70,7 +71,7 @@ describe('end-to-end customer workflow (HTTP API + Redis worker + PostgreSQL)', 
     const documentId = accepted.body.documentId as string;
 
     // 3–5. Asynchronous processing: extraction with verified evidence, validation.
-    await waitFor(documentId, (p) => p.status === 'awaiting_review');
+    await waitFor(documentId, (p) => p.reviewStatus === 'awaiting_review');
     const v1 = (await rest(`/api/documents/${documentId}`)).body;
     expect(v1.values).toHaveLength(9);
     expect(v1.values.every((v: any) => v.evidence?.quote)).toBe(true);
@@ -83,14 +84,14 @@ describe('end-to-end customer workflow (HTTP API + Redis worker + PostgreSQL)', 
       const body = v.semanticKey === 'invoice.po_number' ? { action: 'correct', value: 'PO-88213-A', note: 'Matches our PO system' } : { action: 'approve' };
       expect((await rest(`/api/values/${v.id}/review`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).status).toBe(200);
     }
-    expect((await rest(`/api/documents/${documentId}/progress`)).body).toMatchObject({ status: 'approved', progress: { approved: 8, corrected: 1, pending: 0 } });
+    expect((await rest(`/api/documents/${documentId}/progress`)).body).toMatchObject({ status: 'extracted', reviewStatus: 'approved', progress: { approved: 8, corrected: 1, pending: 0 } });
 
     // 7–9. Revised document: two changed fields reopen, seven carry over.
     const revision = await uploadPdf(`/api/documents/${documentId}/versions?filename=northwind-rev.pdf`, await invoicePdf(INVOICE_V2));
     expect(revision.status).toBe(202);
     expect(revision.body).toMatchObject({ outcome: 'new_version', version: 2 });
     // Carried-over decisions alone do not make the revision "in progress": it is ready for review of the 2 reopened fields.
-    const afterRevision = await waitFor(documentId, (p) => p.version === 2 && p.status === 'awaiting_review');
+    const afterRevision = await waitFor(documentId, (p) => p.version === 2 && p.reviewStatus === 'awaiting_review');
     expect(afterRevision.progress).toMatchObject({ pending: 2, carriedOver: 7, gaps: 0 });
     const v2 = (await rest(`/api/documents/${documentId}`)).body;
     expect(v2.values.filter((v: any) => v.state === 'pending').map((v: any) => v.semanticKey).sort()).toEqual(['invoice.due_date', 'invoice.po_number']);
@@ -101,7 +102,7 @@ describe('end-to-end customer workflow (HTTP API + Redis worker + PostgreSQL)', 
     // 10. Output document.
     const gen = await rest(`/api/documents/${documentId}/generate`, { method: 'POST' });
     expect(gen.status).toBe(202);
-    await waitFor(documentId, (p) => p.status === 'completed');
+    await waitFor(documentId, (p) => p.reviewStatus === 'completed');
     const verified = await capability('documents.outputs.verify', { tenant: 'lakeside', generatedDocumentId: gen.body.generatedDocumentId });
     expect(verified.reproducible).toBe(true);
 
@@ -127,12 +128,12 @@ describe('end-to-end customer workflow (HTTP API + Redis worker + PostgreSQL)', 
 
   it('a newly published template version never changes earlier documents or outputs', async () => {
     const id = (await uploadPdf('/api/documents?documentType=invoice&filename=t.pdf', await invoicePdf({ ...INVOICE_V1, number: 'INV-2026-0700' }))).body.documentId;
-    await waitFor(id, (p) => p.status === 'awaiting_review');
+    await waitFor(id, (p) => p.reviewStatus === 'awaiting_review');
     for (const v of (await rest(`/api/documents/${id}`)).body.values) {
       await rest(`/api/values/${v.id}/review`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'approve' }) });
     }
     const gen = (await rest(`/api/documents/${id}/generate`, { method: 'POST' })).body;
-    await waitFor(id, (p) => p.status === 'completed');
+    await waitFor(id, (p) => p.reviewStatus === 'completed');
     const [before] = await q(ctx, 'SELECT output_sha256 FROM generated_documents WHERE id = $1', [gen.generatedDocumentId]);
 
     // Operator publishes template v2 with a different output position for the total.
@@ -149,7 +150,7 @@ describe('end-to-end customer workflow (HTTP API + Redis worker + PostgreSQL)', 
     expect(verified).toMatchObject({ reproducible: true, storedSha256: before.output_sha256 });
     // A new document uses the new version.
     const fresh = (await uploadPdf('/api/documents?documentType=invoice&filename=t2.pdf', await invoicePdf({ ...INVOICE_V1, number: 'INV-2026-0701' }))).body.documentId;
-    await waitFor(fresh, (p) => p.status === 'awaiting_review');
+    await waitFor(fresh, (p) => p.reviewStatus === 'awaiting_review');
     expect((await rest(`/api/documents/${fresh}`)).body.viewing.templateVersion).toBe(2);
   });
 
@@ -159,7 +160,7 @@ describe('end-to-end customer workflow (HTTP API + Redis worker + PostgreSQL)', 
     const second = await uploadPdf(`/api/documents/${id}/versions?filename=c2.pdf`, await invoicePdf({ ...INVOICE_V1, number: 'INV-2026-0800', due: 'April 30, 2026' }));
     expect(second.body.version).toBe(2);
     worker = startWorker(ctx, { dispatchMs: 100, reconcileMs: 60_000 });
-    const p = await waitFor(id, (x) => x.status === 'awaiting_review');
+    const p = await waitFor(id, (x) => x.reviewStatus === 'awaiting_review');
     expect(p.version).toBe(2);
     const versions = await q(ctx, `SELECT version, processing_status FROM document_versions WHERE document_id = $1 ORDER BY version`, [id]);
     expect(versions).toEqual([

@@ -92,6 +92,23 @@ export const OperationsPage: React.FC<{
         )}
       </div>
       {error && <div className="error">{error}</div>}
+      {me.operator && (
+          <section className="card">
+            <h2>Add a customer</h2>
+            <form
+              className="form-row"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void call('tenants.create', newTenant).then(() => { setNewTenant({ slug: '', name: '' }); onTenantsChanged(); }, (err) => setError(err.message));
+              }}
+            >
+              <label>Short name<input aria-label="Tenant slug" value={newTenant.slug} placeholder="acme" onChange={(e) => setNewTenant({ ...newTenant, slug: e.target.value })} /></label>
+              <label>Name<input aria-label="Tenant name" value={newTenant.name} placeholder="Acme Corp" onChange={(e) => setNewTenant({ ...newTenant, name: e.target.value })} /></label>
+              <button className="btn-primary" type="submit">Create customer</button>
+            </form>
+            <p className="small muted">Each customer gets its own intake URL (/in/&lt;short name&gt;) for API, single and bulk submissions. Then set up its document types in Schema Studio.</p>
+          </section>
+      )}
 
       {stats && (
         <>
@@ -179,6 +196,15 @@ export const OperationsPage: React.FC<{
           <h2>Model processing for {tenant}</h2>
           <div className="form-row">
             <label>
+              Extraction
+              <select aria-label="Extraction provider" value={models.extraction ?? ''} onChange={(e) => void setPolicy({ extraction: e.target.value || undefined })}>
+                <option value="">Deployment default (local)</option>
+                <option value="laya">Laya (local decision model)</option>
+                <option value="anthropic">Anthropic (external, generative)</option>
+                <option value="none">None (pattern fields only)</option>
+              </select>
+            </label>
+            <label>
               Semantic checks
               <select aria-label="Semantic provider" value={models.semantic ?? ''} onChange={(e) => void setPolicy({ semantic: e.target.value || undefined })}>
                 <option value="">Deployment default (local)</option>
@@ -220,21 +246,6 @@ export const OperationsPage: React.FC<{
                 </tbody>
               </table>
             )}
-          </section>
-          <section className="card">
-            <h2>New customer</h2>
-            <form
-              className="form-row"
-              onSubmit={(e) => {
-                e.preventDefault();
-                void call('tenants.create', newTenant).then(() => { setNewTenant({ slug: '', name: '' }); onTenantsChanged(); }, (err) => setError(err.message));
-              }}
-            >
-              <label>Short name<input aria-label="Tenant slug" value={newTenant.slug} placeholder="acme" onChange={(e) => setNewTenant({ ...newTenant, slug: e.target.value })} /></label>
-              <label>Name<input aria-label="Tenant name" value={newTenant.name} placeholder="Acme Corp" onChange={(e) => setNewTenant({ ...newTenant, name: e.target.value })} /></label>
-              <button className="btn-primary" type="submit">Create customer</button>
-            </form>
-            <p className="small muted">New customers get portal and API ingress endpoints. Configure document types and templates in Schema Studio.</p>
           </section>
         </>
       )}

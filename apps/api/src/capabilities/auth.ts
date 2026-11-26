@@ -5,10 +5,10 @@ import { hashToken } from '../domain/tenants';
 /** Tenant-scoped permissions by membership role. */
 export const ROLE_PERMISSIONS: Record<string, string[]> = {
   customer_admin: [
-    'documents.read', 'documents.submit', 'documents.generate', 'reviews.decide', 'reviews.propose',
+    'documents.read', 'documents.submit', 'documents.generate', 'documents.retry', 'reviews.decide', 'reviews.propose',
     'templates.read', 'provenance.read', 'operations.read', 'operations.retry', 'models.read', 'models.authorize',
   ],
-  reviewer: ['documents.read', 'documents.submit', 'documents.generate', 'reviews.decide', 'reviews.propose', 'templates.read', 'provenance.read'],
+  reviewer: ['documents.read', 'documents.submit', 'documents.generate', 'documents.retry', 'reviews.decide', 'reviews.propose', 'templates.read', 'provenance.read'],
   viewer: ['documents.read', 'templates.read', 'provenance.read'],
   submitter: ['documents.submit', 'documents.read'],
   agent: [],

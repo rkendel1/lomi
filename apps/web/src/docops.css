@@ -242,3 +242,17 @@ input, select, textarea { font: inherit; border: 1px solid var(--line); border-r
 .mapper-toolbar .ctrl-select { background: #fff; color: var(--ink); border: 1px solid var(--line); }
 .mapper-toolbar .ctrl-toggle-btn { background: #fff; color: var(--ink); border: 1px solid var(--line); }
 .mapper-toolbar .ctrl-toggle-btn.active { background: var(--ink); color: #fff; }
+
+/* ── Duplicates, re-sends, extraction status ─────────────────────────────── */
+.tag-info { background: #e6ecff; color: var(--brand); }
+.tag-muted { background: #eef0f4; color: var(--muted); }
+.xs { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
+.xs-queued { color: var(--info); }
+.xs-extracting { color: var(--action); }
+.xs-extracted { color: var(--good); }
+.xs-failed { color: var(--bad); }
+.dup-banner { background: #fff; border: 1px solid var(--line); border-left: 4px solid var(--warn); border-radius: 8px; padding: 8px 12px; margin: 8px 0; display: grid; gap: 4px; font-size: 14px; }
+.dup-line a { margin: 0 2px; }
+.dup-warn { color: #7a4a00; }
+.receipt-duplicate_exact { border-left: 3px solid #cbd5e1; }
+.receipt-new_version { border-left: 3px solid var(--brand); }

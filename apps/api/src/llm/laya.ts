@@ -57,28 +57,27 @@ export function nativeLaya(): LayaNative {
 const INSTALL_ACTION = 'Install the model on the worker (`ml-runtime model install laya`, or set ML_RUNTIME_MODEL_DIR), then retry the document.';
 
 /**
- * Semantic validation with Laya, a local structured-decision model. Laya only
- * answers bounded, typed questions (yes/no, choice, score) about a value that
- * has already been extracted and whose evidence has already been verified
- * against the document. It never extracts. Its confidence is recorded as
- * model output, never as a calibrated probability.
+ * One loaded Laya model per worker, shared by extraction and semantic checks.
+ * Readiness is checked with the runtime's selfTest (no inference) and cached
+ * once ready; a missing model raises ProviderNotReadyError for an operator.
  */
-export class LayaSemanticValidator implements SemanticValidator {
-  readonly name = 'laya';
-  readonly external = false;
+export class LayaSession {
   private runtime: Promise<DecisionRuntime> | null = null;
   private ready: ProviderReadiness | null = null;
 
   constructor(
     private readonly native: LayaNative,
-    private readonly options: { modelRoot?: string; model?: string } = {}
+    readonly options: { modelRoot?: string; model?: string } = {}
   ) {}
 
-  /** Checks the native binding and the installed model without running inference. Cached once ready. */
+  get model(): string {
+    return this.options.model ?? 'laya';
+  }
+
   async readiness(): Promise<ProviderReadiness> {
     if (this.ready?.ready) return this.ready;
     try {
-      const test = this.native.selfTest({ modelRoot: this.options.modelRoot, model: this.options.model ?? 'laya' });
+      const test = this.native.selfTest({ modelRoot: this.options.modelRoot, model: this.model });
       const failed = test.checks.filter((c) => !c.ok).map((c) => c.message);
       const result: ProviderReadiness = test.available
         ? { ready: true, detail: 'Model loaded', model: test.model ? `${test.model.identifier}@${test.model.revision} (${test.model.backend})` : 'laya' }
@@ -90,21 +89,45 @@ export class LayaSemanticValidator implements SemanticValidator {
     }
   }
 
-  private async getRuntime(): Promise<DecisionRuntime> {
+  async get(role: 'extraction' | 'semantic'): Promise<DecisionRuntime> {
     const readiness = await this.readiness();
-    if (!readiness.ready) throw new ProviderNotReadyError(this.name, 'semantic', readiness.detail, INSTALL_ACTION);
+    if (!readiness.ready) throw new ProviderNotReadyError('laya', role, readiness.detail, INSTALL_ACTION);
     this.runtime ??= this.native.create({ modelRoot: this.options.modelRoot }).catch((error) => {
       this.runtime = null;
-      throw new ProviderNotReadyError(this.name, 'semantic', (error as Error).message, INSTALL_ACTION);
+      throw new ProviderNotReadyError('laya', role, (error as Error).message, INSTALL_ACTION);
     });
     return this.runtime;
   }
 
-  /** Load the model ahead of the first document. Does nothing if the model is not installed. */
   async warm(): Promise<ProviderReadiness> {
     const readiness = await this.readiness();
-    if (readiness.ready) await this.getRuntime();
+    if (readiness.ready) await this.get('semantic');
     return readiness;
+  }
+}
+
+/**
+ * Semantic validation with Laya, a local structured-decision model. Laya only
+ * answers bounded, typed questions (yes/no, choice, score) about a value that
+ * has already been extracted and whose evidence has already been verified
+ * against the document. Its confidence is recorded as model output, never as
+ * a calibrated probability.
+ */
+export class LayaSemanticValidator implements SemanticValidator {
+  readonly name = 'laya';
+  readonly external = false;
+  private readonly session: LayaSession;
+
+  constructor(native: LayaNative | LayaSession, options: { modelRoot?: string; model?: string } = {}) {
+    this.session = native instanceof LayaSession ? native : new LayaSession(native, options);
+  }
+
+  readiness(): Promise<ProviderReadiness> {
+    return this.session.readiness();
+  }
+
+  warm(): Promise<ProviderReadiness> {
+    return this.session.warm();
   }
 
   private request(check: SemanticCheckRequest) {
@@ -116,12 +139,11 @@ export class LayaSemanticValidator implements SemanticValidator {
           ? { type: 'score', levels: d.levels }
           : { type: 'noul', false_description: 'No', true_description: 'Yes' };
     return {
-      model: this.options.model ?? 'laya',
+      model: this.session.model,
       input: `Field: ${check.semanticKey}\nExtracted value: ${check.value}\nVerified evidence from the document: "${check.quote}"`,
       decisions: [{ name: 'check', instructions: check.prompt, kind }],
     };
   }
-
   private interpret(check: SemanticCheckRequest, decision: LayaDecision | undefined): SemanticCheckResult {
     if (!decision) return { semanticKey: check.semanticKey, outcome: 'uncertain', explanation: 'Laya returned no decision.', confidence: null };
     const d = check.decision;
@@ -153,7 +175,7 @@ export class LayaSemanticValidator implements SemanticValidator {
   }
 
   async check(_document: ParsedDocument, checks: SemanticCheckRequest[]) {
-    const runtime = await this.getRuntime();
+    const runtime = await this.session.get('semantic');
     const requests = checks.map((c) => this.request(c));
     const responses: LayaResult[] = [];
     for (const body of requests) responses.push((await runtime.decideAsync(body)) as LayaResult);

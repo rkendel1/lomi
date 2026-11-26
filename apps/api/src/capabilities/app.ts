@@ -7,7 +7,7 @@ import type { TemplateDefinition } from '@lomi/docops';
 import { audit, DomainError, type Actor, type Ctx } from '../domain/common';
 import { addVersion, getDocument, getProgress, listDocuments, nextForReview, originalFile, submitDocument } from '../domain/documents';
 import { generatedFile, requestGeneration, verifyGenerated } from '../domain/generation';
-import { listFailures, operationalStats, providerReadiness, provenance, retryJob } from '../domain/operations';
+import { listFailures, operationalStats, providerReadiness, provenance, retryDocument, retryJob } from '../domain/operations';
 import { approveVerified, proposeCorrection, reviewValue } from '../domain/review';
 import { basePdfFile, createDocumentType, getTemplate, listTemplates, publishTemplate, saveDraft, uploadBasePdf } from '../domain/templates';
 import { configureIngress, createTenant, ingressInfo, listTenants, resolveTenant, updateModelSettings } from '../domain/tenants';
@@ -199,7 +199,7 @@ export function buildApplication(ctx: Ctx): AppPortApplication {
       permissions: ['models.authorize'], effect: 'consequential',
       input: s.object({
         tenant,
-        extraction: s.optional(s.enum(['anthropic', 'none'])),
+        extraction: s.optional(s.enum(['laya', 'anthropic', 'none'])),
         semantic: s.optional(s.enum(['laya', 'anthropic', 'none'])),
         semanticFallback: s.optional(s.enum(['anthropic', 'none'])),
         externalProcessingAllowed: s.optional(s.boolean()),
@@ -404,6 +404,11 @@ export function buildApplication(ctx: Ctx): AppPortApplication {
       name: 'operations.retry', description: 'Retry a failed job once its cause is resolved.', permissions: ['operations.retry'], effect: 'consequential',
       input: s.object({ tenant, jobId: s.string() }), output: s.object({ jobId: s.string(), status: s.string() }),
       run: async (i, c) => retryJob(ctx, c.actor, { tenantId: c.tenantId, jobId: i.jobId }),
+    }),
+    cap({
+      name: 'documents.retry', description: "Retry a document whose processing failed (its current version).", permissions: ['documents.retry'], effect: 'consequential',
+      input: s.object({ tenant, documentId: s.string() }), output: s.object({ jobId: s.string(), status: s.string() }),
+      run: async (i, c) => retryDocument(ctx, c.actor, { tenantId: c.tenantId, documentId: i.documentId }),
     }),
     cap({
       name: 'operations.providers', description: 'Model provider readiness as reported by workers.', permissions: ['lomi.operations.read'], effect: 'observation',

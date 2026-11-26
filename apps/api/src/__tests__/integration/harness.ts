@@ -12,7 +12,7 @@ import { runJob } from '../../jobs/runner';
 import { buildProviders } from '../../llm/providers';
 import type { LayaNative } from '../../llm/laya';
 import { FilesystemObjectStore } from '../../storage/objectStore';
-import { INVOICE_TEMPLATE, outputFormPdf } from '../../seed/fixtures';
+import { INVOICE_TEMPLATE, LEASE_TEMPLATE, MARKET_REPORT_TEMPLATE, outputFormPdf } from '../../seed/fixtures';
 import type { TemplateDefinition } from '@lomi/docops';
 
 export const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL ?? 'postgres://lomi:lomi@localhost:5432/lomi_test';
@@ -93,3 +93,6 @@ export async function drain(ctx: Ctx, maxRounds = 20): Promise<string[]> {
 export async function q<T = any>(ctx: Ctx, sql: string, params: unknown[] = []): Promise<T[]> {
   return withSystem(ctx.db, async (tx) => (await tx.query(sql, params)).rows as T[]);
 }
+
+/** Deterministic pattern templates for pipeline tests that use generated invoices (no model needed). */
+export const PATTERN_TEMPLATES = { invoice: INVOICE_TEMPLATE, lease: LEASE_TEMPLATE, market_report: MARKET_REPORT_TEMPLATE };

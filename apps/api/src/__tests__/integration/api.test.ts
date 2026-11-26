@@ -7,6 +7,7 @@ import { createDocOpsRoutes } from '../../http/docops';
 import { seedConfiguration } from '../../seed/seed';
 import { INVOICE_V1, invoicePdf } from '../../seed/fixtures';
 import { drain, q, setup } from './harness';
+import { PATTERN_TEMPLATES } from './harness';
 
 let ctx: Ctx;
 let server: Server;
@@ -37,7 +38,7 @@ async function upload(token: string, tenant = 'lakeside', bytes?: Uint8Array) {
 
 beforeAll(async () => {
   ctx = await setup();
-  await seedConfiguration(ctx);
+  await seedConfiguration(ctx, { templates: PATTERN_TEMPLATES });
   server = createApiServer(createDocOpsRoutes(ctx));
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -69,7 +70,7 @@ describe('REST API', () => {
     expect(review.status).toBe(200);
     expect(await review.json()).toMatchObject({ state: 'corrected', oldValue: '4590.00', newValue: '4600.00' });
     const progress = await (await api(`/api/documents/${sub.documentId}/progress`, { token: TOKENS.reviewer })).json();
-    expect(progress).toMatchObject({ status: 'partially_reviewed', progress: { corrected: 1, pending: 8 } });
+    expect(progress).toMatchObject({ status: 'extracted', reviewStatus: 'partially_reviewed', progress: { corrected: 1, pending: 8 }, counts: { corrected: 1, pending: 8 } });
 
     // Re-uploading identical bytes is recognised as a duplicate, not a new document.
     const dup = await upload(TOKENS.reviewer);

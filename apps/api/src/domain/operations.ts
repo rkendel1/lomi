@@ -223,3 +223,18 @@ export async function provenance(ctx: Ctx, input: { tenantId: string; documentId
     };
   });
 }
+
+/** Retry the failed processing of a document's current version (the brief's "visibly retryable"). */
+export async function retryDocument(ctx: Ctx, actor: Actor, input: { tenantId: string; documentId: string }) {
+  const job = await withTenant(ctx.db, input.tenantId, async (tx) =>
+    (
+      await tx.query(
+        `SELECT j.id FROM documents d JOIN jobs j ON j.subject_id = d.current_version_id AND j.kind = 'process_version'
+         WHERE d.id = $1 ORDER BY j.created_at DESC LIMIT 1`,
+        [input.documentId]
+      )
+    ).rows[0]
+  );
+  if (!job) throw notFound('Processing job');
+  return retryJob(ctx, actor, { tenantId: input.tenantId, jobId: job.id });
+}

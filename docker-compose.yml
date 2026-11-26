@@ -24,7 +24,10 @@ x-app: &app
     # authorize external processing, and only when ANTHROPIC_API_KEY is set (see .env.example).
     LOMI_LAYA: ${LOMI_LAYA:-1}
     LOMI_SEMANTIC_PROVIDER: ${LOMI_SEMANTIC_PROVIDER:-laya}
-    LOMI_EXTRACTION_PROVIDER: ${LOMI_EXTRACTION_PROVIDER:-none}
+    LOMI_EXTRACTION_PROVIDER: ${LOMI_EXTRACTION_PROVIDER:-laya}
+    # Development only: REST calls without a token act as this demo identity, so plain `curl`
+    # examples work. Remove for any shared or production deployment.
+    LOMI_DEV_DEFAULT_TOKEN: ${LOMI_DEV_DEFAULT_TOKEN:-dev-lakeside-admin}
     ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   volumes:
     - objects:/data/objects

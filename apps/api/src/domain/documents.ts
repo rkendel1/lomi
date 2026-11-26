@@ -338,6 +338,30 @@ async function hasOutput(tx: Tx, versionId: string): Promise<boolean> {
   return rows.length > 0;
 }
 
+/** The brief's extraction lifecycle, derived from the detailed processing status. */
+export function extractionStatus(processingStatus: string): 'queued' | 'extracting' | 'extracted' | 'failed' | 'superseded' {
+  if (processingStatus === 'received' || processingStatus === 'queued') return 'queued';
+  if (['parsing', 'extracting', 'validating'].includes(processingStatus)) return 'extracting';
+  if (processingStatus === 'processed') return 'extracted';
+  if (processingStatus === 'superseded') return 'superseded';
+  return 'failed';
+}
+
+/** How a document arrived: first receipt, revisions, identical re-sends (and through which channels). */
+async function receiptsFor(tx: Tx, documentId: string) {
+  const { rows } = await tx.query(
+    `SELECT outcome, channel, count(*)::int AS n FROM submissions WHERE document_id = $1 GROUP BY outcome, channel`,
+    [documentId]
+  );
+  const count = (outcome: string) => rows.filter((r) => r.outcome === outcome).reduce((a, r) => a + r.n, 0);
+  return {
+    total: rows.reduce((a, r) => a + r.n, 0),
+    revisions: count('new_version'),
+    identicalResends: count('duplicate_exact'),
+    resendChannels: [...new Set(rows.filter((r) => r.outcome === 'duplicate_exact').map((r) => r.channel as string))],
+  };
+}
+
 export async function documentSummary(tx: Tx, row: Record<string, any>) {
   const progress = row.processing_status === 'processed' ? await progressFor(tx, row.current_version_id) : null;
   const status = deriveStatus(row.processing_status, progress, await hasOutput(tx, row.current_version_id));
@@ -349,7 +373,9 @@ export async function documentSummary(tx: Tx, row: Record<string, any>) {
     submittedAt: (row.created_at as Date).toISOString(),
     updatedAt: (row.updated_at as Date).toISOString(),
     status,
+    extractionStatus: extractionStatus(row.processing_status),
     statusLabel: STATUS_LABELS[status],
+    receipts: await receiptsFor(tx, row.id),
     failureReason: (row.failure_reason as string | null) ?? null,
     progress,
     warning:
@@ -435,6 +461,14 @@ export async function getDocument(ctx: Ctx, input: { tenantId: string; documentI
         [input.documentId]
       )
     ).rows;
+    const receiptRows = (
+      await tx.query(
+        `SELECT s.received_at, s.outcome, s.channel, s.filename, s.sha256, p.display_name AS submitted_by, dv.version
+         FROM submissions s LEFT JOIN principals p ON p.id = s.submitted_by JOIN document_versions dv ON dv.id = s.document_version_id
+         WHERE s.document_id = $1 ORDER BY s.received_at`,
+        [input.documentId]
+      )
+    ).rows;
     const history = (
       await tx.query(
         `SELECT a.created_at, a.action, a.actor_kind, p.display_name AS actor, a.detail
@@ -481,6 +515,18 @@ export async function getDocument(ctx: Ctx, input: { tenantId: string; documentI
         createdAt: g.created_at.toISOString(),
       })),
       related: related.map((r) => ({ documentId: r.other_id, title: r.title, kind: r.kind, reason: r.reason })),
+      receiptLog: receiptRows.map((r) => ({
+        at: r.received_at.toISOString(),
+        outcome: r.outcome as string,
+        label:
+          r.outcome === 'new_document' ? 'First received'
+          : r.outcome === 'new_version' ? `Revised — became version ${r.version}`
+          : `Identical re-send of version ${r.version} — not reprocessed`,
+        channel: r.channel as string,
+        filename: r.filename as string,
+        sha256: r.sha256 as string,
+        submittedBy: (r.submitted_by as string | null) ?? null,
+      })),
       history: history.map((h) => ({
         at: h.created_at.toISOString(),
         action: h.action,
@@ -614,6 +660,7 @@ export async function getProgress(ctx: Ctx, input: { tenantId: string; documentI
       documentId: summary.id,
       version: summary.currentVersion.number,
       status: summary.status,
+      extractionStatus: summary.extractionStatus,
       statusLabel: summary.statusLabel,
       nextAction: summary.nextAction,
       failureReason: summary.failureReason,
