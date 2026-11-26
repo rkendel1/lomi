@@ -1,217 +1,163 @@
-# Lomi — PDF Field Mapper Monorepo
+# Lomi Document Operations
 
-A visual PDF form-mapping tool plus a schema-driven rendering engine, packaged as a
-single **Turborepo** monorepo on **pnpm workspaces**.
+Lomi runs document workflows for multiple customers. Documents arrive; Lomi
+extracts the fields each customer's template defines, proves where every value
+came from, checks it, puts exactly the decisions that need a person in front of
+a reviewer, keeps every decision, and produces output documents from approved
+data — with provenance for all of it.
 
-The UI maps fields onto a PDF, exports versionable schema artifacts, and renders
-filled PDFs either in the browser or through a small server API. The same domain
-packages power both paths.
+It is built on **coordtool**, the PDF field mapper this repository started as:
+its PDF.js viewer, visual mapper, field model, schema generators and pdf-lib
+renderer are reused, not replaced.
 
----
-
-## Repository layout
-
-```
-.
-├── apps/
-│   ├── web/                 React + Vite UI (browser)
-│   └── api/                 Node HTTP service (server-side PDF rendering)
-├── packages/
-│   ├── core/                Pure domain model, schema generation, field inference
-│   ├── pdf/                 PDF rendering engine, formatters, form registry
-│   └── config/              Shared TypeScript and flat ESLint configuration
-├── turbo.json               Real task graph (build / test / lint / typecheck / dev)
-├── pnpm-workspace.yaml
-├── docker-compose.yml
-└── package.json
-```
-
-### Where the boundaries are, and why
-
-| Package | Owns | Must not depend on |
-| --- | --- | --- |
-| `@lomi/core` | `Field`/schema types, artifact generators (`layout`, `mapping`, `transforms`, `questions`, `validation`), field naming/inference, coordinates, grid snapping, ruled-cell detection, OCR label helpers | React, DOM APIs, `pdf-lib`, Tesseract, Node |
-| `@lomi/pdf` | `pdf-lib` rendering, text wrapping/overflow, tables, checkboxes, formatters, form registry + generation orchestration | React, DOM, browser workers |
-| `@lomi/config` | Base `tsconfig`, shared flat ESLint preset | Runtime code |
-| `@lomi/web` | React components, PDF.js viewer, Tesseract worker, browser preview/download UX | Server code |
-| `@lomi/api` | HTTP routing, payload validation, server-side rendering endpoint | React, browser APIs |
-
-The dependency graph is acyclic:
-
-```
-config  (dev-only)
-  ↑
-core  ←  pdf
-  ↑      ↑
-  ├── web
-  └── api
-```
-
-This split keeps the expensive/awkward browser concerns (PDF.js, Tesseract, canvas,
-blob URLs) in `apps/web`, while the reusable document model and renderer stay
-portable. `apps/api` reuses `core` + `pdf` unchanged, which is why the same schema
-can be rendered in the browser or on the server.
+- Architecture, data model, trade-offs and scaling: [docs/architecture.md](docs/architecture.md)
+- What existed before this work: [docs/architecture-inventory.md](docs/architecture-inventory.md)
+- Engineering session log: [docs/sessions/](docs/sessions/)
+- coordtool's original feature docs: [FEATURES.md](FEATURES.md), [IMPLEMENTATION.md](IMPLEMENTATION.md), [SUMMARY.md](SUMMARY.md)
 
 ---
 
-## Task pipeline
+## Run it
 
-`turbo.json` is the source of truth for the pipeline:
-
-```json
-{
-  "tasks": {
-    "build":     { "dependsOn": ["^build"], "outputs": ["dist/**", "build/**"] },
-    "test":      { "dependsOn": ["^build"], "outputs": [] },
-    "lint":      { "dependsOn": ["^lint"],  "outputs": [] },
-    "typecheck": { "dependsOn": ["^build"], "outputs": [] },
-    "dev":       { "dependsOn": ["^build"], "persistent": true, "cache": false }
-  }
-}
-```
-
-- **build** compiles dependency packages first (`core` → `pdf` → `web`/`api`).
-  Libraries/API emit ESM + `.d.ts` through `tsup`; the web app emits a Vite bundle.
-- **test** builds workspace dependencies, then runs Vitest in every package.
-- **lint** runs ESLint in every package; `^lint` keeps package order consistent.
-- **typecheck** is a separate cached task so CI can fail on types without emitting.
-- **dev** builds dependencies once, then starts the persistent Vite and API watchers.
-
-Turbo caches task results keyed by inputs and package graph, so a second
-`pnpm build`/`pnpm test`/`pnpm lint` is effectively instant.
-
----
-
-## Quick start (local)
-
-Requirements: Node 20+, Corepack/pnpm 10.
-
-```bash
-corepack enable
-pnpm install
-pnpm build          # build core, pdf, web, api
-pnpm test           # 110 tests across core, pdf, api, web
-pnpm lint
-pnpm typecheck
-```
-
-Run both apps in development:
-
-```bash
-pnpm dev
-```
-
-- Web UI: <http://localhost:3000>
-- API: <http://localhost:4000/api/health>
-
-Vite proxies `/api` to the API service, so the browser code always uses relative
-`/api/...` URLs in development and production.
-
-### Useful commands
-
-| Command | What it does |
-| --- | --- |
-| `pnpm build` | `turbo run build` across the graph |
-| `pnpm test` | `turbo run test` across the graph |
-| `pnpm lint` | `turbo run lint` |
-| `pnpm typecheck` | `turbo run typecheck` |
-| `pnpm dev` | persistent web + API dev servers |
-| `pnpm --filter @lomi/core test` | test one package |
-| `pnpm --filter @lomi/web build` | build one app and its dependencies |
-| `pnpm docker:up` | `docker compose up --build` |
-| `pnpm docker:down` | stop the stack |
-
----
-
-## One-command Docker Compose
-
-From the repository root:
+Prerequisites: Docker with Compose v2. First start needs network access (images,
+npm packages, and a one-time download of the local Laya model, ~1 min).
 
 ```bash
 docker compose up --build
 ```
 
-That builds and starts:
+Open <http://localhost:3000> and pick a demo identity. The stack:
 
-| Service | Port | Purpose |
-| --- | --- | --- |
-| `web` | `3000` | nginx serving the built SPA and proxying `/api` |
-| `api` | `4000` | Node service exposing health + server-side render |
+| Service | Purpose |
+| --- | --- |
+| `web` (:3000) | UI (nginx), proxies `/api` |
+| `api` (:4000) | REST, AppPort HTTP binding, MCP. Never loads models. |
+| `worker` | outbox dispatch, processing, recovery; runs Laya in-process |
+| `postgres` | the only system of record |
+| `redis` | job delivery only — losing it loses nothing |
+| `migrate`, `models`, `seed` | one-shot: schema, Laya install, demo data |
 
-Both services have health checks; `web` waits for `api` to become healthy. Open
-<http://localhost:3000>. The preview panel's **Render via API** button exercises the
-same-origin nginx proxy end to end.
+API, worker, migrate, models and seed run from one application image.
+
+Configuration: copy `.env.example` to `.env` to change defaults. The defaults
+are safe for local development. No credentials are needed; Anthropic is only
+used if you set `ANTHROPIC_API_KEY` **and** a tenant authorizes external
+processing.
+
+### Demo data
+
+Two customers (**Lakeside Property Management**, **Summit Realty Group**) with
+published templates for an invoice, a lease excerpt and a market report, and:
+
+- a Northwind invoice that was reviewed (one correction) and then **revised**:
+  version 2 changes the due date and PO number, so 2 fields are back for review
+  and 7 carried over;
+- the same invoice re-sent through the API ingress, recognised as a duplicate;
+- a lease excerpt and a market report ready for review;
+- a Summit invoice that Lakeside users cannot see.
+
+| Sign in as | Sees |
+| --- | --- |
+| Riley Reviewer (Lakeside) | Lakeside documents; review, correct, generate |
+| Avery Admin (Lakeside) | plus Lakeside operations and model-processing authorization |
+| Sam Reviewer (Summit) | Summit only |
+| Olivia Ops (Lomi operator) | all customers, Operations, Schema Studio |
+
+Demo identities exist only because `LOMI_DEV_LOGIN=1` in `docker-compose.yml`.
+Their tokens are well-known development values; never seed or enable them in
+production. An agent identity (`dev-lakeside-agent`, delegated by Riley) can be
+used against the API/MCP to see agent limits.
+
+### Try the API
 
 ```bash
-docker compose ps
-docker compose logs -f api
-docker compose down
+curl -s -H 'Authorization: Bearer dev-lakeside-reviewer' http://localhost:4000/api/documents
 ```
 
----
-
-## API
-
-### `GET /api/health`
-
-```json
-{ "status": "ok", "service": "lomi-api", "version": "0.1.0", "uptimeSeconds": 12 }
+```bash
+curl -s -X POST -H 'Authorization: Bearer dev-lakeside-reviewer' -H 'Content-Type: application/pdf' \
+  --data-binary @invoice.pdf 'http://localhost:4000/api/documents?documentType=invoice&filename=invoice.pdf'
 ```
 
-### `POST /api/render`
+| Endpoint | |
+| --- | --- |
+| `POST /documents` | upload (`application/pdf` with `?documentType=&filename=`, or JSON with `contentBase64`); `202` after durable acceptance |
+| `POST /documents/:id/versions` | upload a revised version |
+| `GET /documents/:id` | current version, status, values, evidence, checks, decisions, history |
+| `POST /values/:id/review` | `{"action":"approve"}` or `{"action":"correct","value":"…","note":"…"}` |
+| `GET /documents/:id/progress` | status, next action, counts |
+| `GET /documents`, `POST /documents/:id/generate`, `GET /documents/:id/file` | list, generate output, download original/output |
 
-Accepts a base64 PDF template plus the generated schema artifacts and returns a
-filled PDF (`application/pdf`).
+All paths also work under `/api/…`. Tenant: `X-Lomi-Tenant` header, or implied
+when the caller belongs to one tenant. Every endpoint is a thin adapter over an
+AppPort capability; the full set is in the manifest at
+`GET /api/appport/manifest` and is exposed to agents over MCP at `POST /api/mcp`.
 
-```json
-{
-  "template": "<base64 PDF>",
-  "layout": { "field_001": { "page": 0, "x": 100, "y": 700, "width": 200, "height": 14, "type": "text", "fontSize": 10, "maxWidth": 200 } },
-  "mapping": {
-    "artifactType": "field-mapping",
-    "version": "1.0",
-    "mappings": [
-      { "id": "mapping_001", "semanticKey": "applicant.name", "binding": { "fieldId": "field_001", "sourceId": "applicantName" } }
-    ]
-  },
-  "transforms": {},
-  "data": { "applicant.name": "Ada Lovelace" }
-}
+### Resilience checks against the running stack
+
+```bash
+scripts/resilience-check.sh
 ```
 
-The endpoint validates the body (20 MB limit, JSON shape, PDF header) and returns
-`400`/`413`/`500` with a JSON error on failure.
+Kills the worker with SIGKILL mid-processing and verifies recovery (takes about
+two minutes, bounded by the job lease), then FLUSHALLs and restarts Redis and
+verifies nothing was lost. `node scripts/ui-smoke.cjs` drives the UI in a
+headless browser (needs Playwright).
 
 ---
 
-## Product features
+## Develop and test
 
-- Visual field mapping over a PDF canvas, with page navigation and persisted fields.
-- OCR-assisted and AcroForm/native field detection (opt-in in the UI).
-- Schema artifacts: layout, mapping, transforms, questions, validation, manifest.
-- Field types: text, multiline, checkbox, date/DOB, currency, phone, SSN, EIN, ZIP,
-  signature, initials, table.
-- Schema-driven rendering: text wrapping, overflow strategies, tables, checkbox
-  styles, page calibration offsets.
-- Preview mode with sample data, plus optional server-side rendering.
-- Export individual JSON artifacts or a complete ZIP bundle.
+Requirements: Node 22, pnpm 10 (`corepack enable`), PostgreSQL 16 and Redis 7
+for the integration tests.
 
-More detail: [FEATURES.md](FEATURES.md), [IMPLEMENTATION.md](IMPLEMENTATION.md),
-[SUMMARY.md](SUMMARY.md), and [schemas/README.md](schemas/README.md).
+```bash
+pnpm install
+```
 
----
+```bash
+docker run -d --name lomi-pg -e POSTGRES_USER=lomi -e POSTGRES_PASSWORD=lomi -e POSTGRES_DB=lomi_test -p 5432:5432 postgres:16-alpine
+```
 
-## Testing
+```bash
+docker run -d --name lomi-redis -p 6379:6379 redis:7-alpine
+```
 
-- `packages/core` — 58 tests (schema generation, naming, inference, detection, coordinates).
-- `packages/pdf` — 46 tests (formatters, renderer, registry, preview PDF generation).
-- `apps/api` — 4 tests (health, render, validation, 404).
-- `apps/web` — 2 component tests (initial render/uploader).
+```bash
+pnpm build && pnpm lint && pnpm typecheck && pnpm test
+```
 
-Run everything with `pnpm test`; Turbo builds `core`/`pdf` first so cross-package
-imports resolve to fresh `dist` output.
+`pnpm test` runs everything through Turborepo. Integration tests use
+`TEST_DATABASE_URL` (default `postgres://lomi:lomi@localhost:5432/lomi_test`)
+and `TEST_REDIS_URL` (default `redis://localhost:6379/15`; the durability
+tests wipe that Redis database). Tests that need the real Laya model run only
+when `LAYA_TEST_MODEL_DIR` points at an installed model
+(`ml-runtime model install laya`); otherwise they are skipped and reported as
+skipped. No test calls a paid model API.
 
----
+| Package | Tests | Covers |
+| --- | --- | --- |
+| `packages/core` | 58 | coordtool field model and schema generation |
+| `packages/pdf` | 49 | rendering, formatters, text extraction, deterministic output |
+| `packages/docops` | 19 | evidence verification, extraction, validation, disposition, carry-over |
+| `apps/api` | 35 | providers (incl. real Laya), workflow, durability with real Redis, REST/AppPort/MCP and tenant isolation, end-to-end |
+| `apps/web` | 4 | mapper standalone/embedded, sign-in |
+
+Run the API and worker outside Docker after `pnpm build`:
+`node apps/api/dist/index.js` and `node apps/api/dist/worker.js` (see
+`.env.example` for variables). `pnpm dev` starts the web dev server and API watcher.
+
+## Troubleshooting
+
+| Symptom | Cause / fix |
+| --- | --- |
+| Documents "On hold — Lomi is resolving an issue" with *semantic provider "laya" is not ready* | The Laya model is not installed on the worker. `docker compose run --rm models`, then retry from Operations. Or set the tenant's semantic provider to `none`. |
+| `models` service fails | It downloads the model on first run; check network access. Set `LOMI_LAYA=0` to run without it. |
+| Worker logs `NativeLoadError` | The worker must run on glibc Linux (the image does). Alpine/musl is not supported by the native runtime. |
+| Upload returns 404 for a tenant | You are not a member of that tenant (Lomi does not reveal whether it exists). |
+| A recovered job took ~2 minutes | Crash recovery waits for the job lease (`JOB_LEASE_SECONDS`, default 120). |
+| Port 3000/4000 in use | Change the published ports in `docker-compose.yml`. |
+| Start from scratch | `docker compose down -v` deletes all data, objects and the model volume. |
 
 ## License
 

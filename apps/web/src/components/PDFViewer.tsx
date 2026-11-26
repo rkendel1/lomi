@@ -211,6 +211,10 @@ interface Props {
   onFieldAdded: (field: Field) => void;
   onFieldSelected: (id: string) => void;
   onOCRProgress?: (progress: number) => void;
+  /** Evidence/inspection mode: clicking selects a box, but nothing can be drawn. */
+  readOnly?: boolean;
+  /** Fill colour for the selected box (e.g. evidence highlighting). */
+  highlightColor?: string;
 }
 
 export const PDFViewer: React.FC<Props> = ({
@@ -230,6 +234,8 @@ export const PDFViewer: React.FC<Props> = ({
   onFieldAdded,
   onFieldSelected,
   onOCRProgress,
+  readOnly = false,
+  highlightColor,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
@@ -527,7 +533,9 @@ export const PDFViewer: React.FC<Props> = ({
       // Check for overflow risk
       const hasOverflow = debugMode && isOverflowRisk(f.type, f.maxWidth ?? f.width);
       
-      ctx.fillStyle = hasOverflow ? 'rgba(255, 0, 0, 0.25)' : TYPE_COLORS[f.type];
+      ctx.fillStyle = hasOverflow
+        ? 'rgba(255, 0, 0, 0.25)'
+        : highlightColor && f.id === selectedId ? highlightColor : TYPE_COLORS[f.type];
       ctx.save();
       ctx.beginPath();
       ctx.rect(canvasX, canvasY, canvasW, canvasH);
@@ -573,7 +581,7 @@ export const PDFViewer: React.FC<Props> = ({
       ctx.strokeRect(x, y, w, h);
       ctx.setLineDash([]);
     }
-  }, [fields, currentPage, selectedId, debugMode, drawing, showFieldOverlays]);
+  }, [fields, currentPage, selectedId, debugMode, drawing, showFieldOverlays, highlightColor]);
 
   // Redraw overlay whenever fields/drawing change
   useEffect(() => {
@@ -615,6 +623,7 @@ export const PDFViewer: React.FC<Props> = ({
       }
     }
 
+    if (readOnly) return;
     isMouseDown.current = true;
     setDrawing({ startX: pos.x, startY: pos.y, endX: pos.x, endY: pos.y });
   };

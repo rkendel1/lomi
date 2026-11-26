@@ -8,6 +8,25 @@ on:
 jobs:
   ci:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: lomi
+          POSTGRES_PASSWORD: lomi
+          POSTGRES_DB: lomi_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U lomi -d lomi_test" --health-interval 5s --health-timeout 3s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgres://lomi:lomi@localhost:5432/lomi_test
+      TEST_REDIS_URL: redis://localhost:6379/15
+      # The real-model Laya tests run only where LAYA_TEST_MODEL_DIR points at an installed model.
     steps:
       - uses: actions/checkout@v4
 
@@ -29,7 +48,7 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
-      - name: Test
+      - name: Test (unit + PostgreSQL/Redis integration)
         run: pnpm test
 
       - name: Build

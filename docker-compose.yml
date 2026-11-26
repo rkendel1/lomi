@@ -1,20 +1,124 @@
+# Lomi Document Operations — `docker compose up` starts the whole stack.
+#
+#   web      nginx serving the UI, proxying /api to the API      http://localhost:3000
+#   api      HTTP API, AppPort binding, MCP (never loads models)  http://localhost:4000
+#   worker   outbox dispatcher, job processing, recovery; runs Laya in-process
+#   postgres sole system of record
+#   redis    BullMQ job delivery only (losing it loses no data)
+#   migrate  one-shot schema migration
+#   models   one-shot install of the local Laya model into a volume
+#   seed     one-shot idempotent demo data
+#
+# api, worker, migrate, models and seed all use the same application image.
+
+x-app: &app
+  image: lomi-app:local
+  environment: &app-env
+    DATABASE_URL: postgres://lomi:lomi@postgres:5432/lomi
+    REDIS_URL: redis://redis:6379
+    LOMI_STORAGE_DIR: /data/objects
+    ML_RUNTIME_MODEL_DIR: /models
+    # Development only: lists seeded demo identities on the login screen. Never enable in production.
+    LOMI_DEV_LOGIN: "1"
+    # Model providers. Laya runs locally in the worker; Anthropic is used only for tenants that
+    # authorize external processing, and only when ANTHROPIC_API_KEY is set (see .env.example).
+    LOMI_LAYA: ${LOMI_LAYA:-1}
+    LOMI_SEMANTIC_PROVIDER: ${LOMI_SEMANTIC_PROVIDER:-laya}
+    LOMI_EXTRACTION_PROVIDER: ${LOMI_EXTRACTION_PROVIDER:-none}
+    ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  volumes:
+    - objects:/data/objects
+    - laya-models:/models
+
 services:
-  api:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: lomi
+      POSTGRES_PASSWORD: lomi
+      POSTGRES_DB: lomi
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lomi -d lomi"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  migrate:
+    <<: *app
     build:
       context: .
       dockerfile: apps/api/Dockerfile
+    command: ["node", "dist/migrate.js"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  models:
+    <<: *app
+    # Idempotent: reports "already_installed" after the first run. Needs network on first run only.
+    command: ["sh", "-c", "if [ \"$$LOMI_LAYA\" = 1 ]; then ml-runtime model install laya && ml-runtime model doctor laya; else echo 'Laya disabled (LOMI_LAYA=0)'; fi"]
+    user: root
+    restart: "no"
+
+  api:
+    <<: *app
     environment:
-      NODE_ENV: production
-      PORT: "4000"
+      <<: *app-env
+      LOMI_MIGRATE_ON_START: "0"
+    command: ["node", "dist/index.js"]
     ports:
       - "4000:4000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4000/api/health"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 10s
       timeout: 3s
-      retries: 5
+      retries: 10
       start_period: 10s
     restart: unless-stopped
+
+  worker:
+    <<: *app
+    environment:
+      <<: *app-env
+      WORKER_ID: worker-1
+    command: ["node", "dist/worker.js"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      models:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  seed:
+    <<: *app
+    command: ["node", "dist/seed/index.js"]
+    depends_on:
+      api:
+        condition: service_healthy
+      worker:
+        condition: service_started
+    restart: "no"
 
   web:
     build:
@@ -32,3 +136,9 @@ services:
       retries: 5
       start_period: 5s
     restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
+  objects:
+  laya-models:

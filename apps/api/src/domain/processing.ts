@@ -1,0 +1,304 @@
+import {
+  decideCarryOver,
+  evidenceFingerprint,
+  extractableFields,
+  interpretationHash,
+  processDocument,
+  ProviderNotReadyError,
+  type ParsedDocument,
+  type PriorFieldState,
+  type ProcessedField,
+  type TemplateDefinition,
+} from '@lomi/docops';
+import { extractPdfText } from '@lomi/pdf/text';
+import { withTenant, type Tx } from '../db/pool';
+import { selectProviders } from '../llm/providers';
+import { completeJob, failJob, holdsLease, type ClaimedJob } from '../jobs/lifecycle';
+import { loadObject } from '../storage/objectStore';
+import { audit, SYSTEM, type Ctx } from './common';
+
+/** A failure that no automatic retry can fix; it needs an operator or the customer. */
+export class PermanentProcessingError extends Error {
+  constructor(
+    message: string,
+    readonly action: string
+  ) {
+    super(message);
+  }
+}
+
+async function setStage(ctx: Ctx, tenantId: string, versionId: string, stage: string): Promise<void> {
+  await withTenant(ctx.db, tenantId, (tx) =>
+    tx.query(
+      `UPDATE document_versions SET processing_status = $2, status_changed_at = now()
+       WHERE id = $1 AND processing_status NOT IN ('superseded', 'processed')`,
+      [versionId, stage]
+    )
+  );
+}
+
+interface VersionContext {
+  version: { id: string; document_id: string; version: number; object_id: string; processing_status: string; document_type_id: string };
+  template: { id: string; version: number; definition: TemplateDefinition };
+  baseline: { id: string; version: number } | null;
+  tenantSettings: Record<string, unknown>;
+  bytes: Uint8Array;
+}
+
+async function documentIdFor(ctx: Ctx, tenantId: string, versionId: string): Promise<string | null> {
+  return withTenant(ctx.db, tenantId, async (tx) => (await tx.query('SELECT document_id FROM document_versions WHERE id = $1', [versionId])).rows[0]?.document_id ?? null);
+}
+
+async function loadContext(ctx: Ctx, job: ClaimedJob): Promise<VersionContext | null> {
+  return withTenant(ctx.db, job.tenantId, async (tx) => {
+    const version = (
+      await tx.query(
+        `SELECT dv.id, dv.document_id, dv.version, dv.object_id, dv.processing_status, d.document_type_id
+         FROM document_versions dv JOIN documents d ON d.id = dv.document_id WHERE dv.id = $1`,
+        [job.subjectId]
+      )
+    ).rows[0];
+    if (!version || version.processing_status === 'superseded' || version.processing_status === 'processed') return null;
+    const template = (
+      await tx.query(
+        `SELECT tv.id, tv.version, tv.definition, dt.key FROM template_versions tv JOIN document_types dt ON dt.id = tv.document_type_id
+         WHERE tv.document_type_id = $1 AND tv.status = 'published' ORDER BY tv.version DESC LIMIT 1`,
+        [version.document_type_id]
+      )
+    ).rows[0];
+    if (!template) {
+      throw new PermanentProcessingError(
+        'No published template exists for this document type.',
+        'Publish a template for this document type in Schema Studio, then retry.'
+      );
+    }
+    const baseline =
+      (
+        await tx.query(
+          `SELECT id, version FROM document_versions WHERE document_id = $1 AND version < $2 AND processing_status = 'processed'
+           ORDER BY version DESC LIMIT 1`,
+          [version.document_id, version.version]
+        )
+      ).rows[0] ?? null;
+    const tenant = (await tx.query('SELECT settings FROM tenants WHERE id = $1', [job.tenantId])).rows[0];
+    const bytes = await loadObject(tx, ctx.store, version.object_id);
+    return { version, template, baseline, tenantSettings: tenant?.settings ?? {}, bytes };
+  });
+}
+
+async function priorStates(tx: Tx, baselineId: string): Promise<Map<string, PriorFieldState>> {
+  const { rows } = await tx.query(
+    `SELECT ev.id, ev.semantic_key, ev.evidence_fingerprint, ev.interpretation_hash, ev.normalized_value, ev.review_state,
+            ev.disposition, ev.final_value, e.quote
+     FROM extracted_values ev LEFT JOIN evidence e ON e.value_id = ev.id WHERE ev.document_version_id = $1`,
+    [baselineId]
+  );
+  return new Map(
+    rows.map((r) => {
+      let decision: PriorFieldState['decision'] = null;
+      if (r.review_state !== 'pending') {
+        const kind = r.disposition === 'auto_approved' && r.review_state === 'approved' ? 'auto_approved' : r.final_value !== r.normalized_value ? 'corrected' : 'approved';
+        decision = { kind, finalValue: r.final_value };
+      }
+      return [
+        r.semantic_key,
+        { valueId: r.id, fingerprint: r.evidence_fingerprint, interpretationHash: r.interpretation_hash, normalizedValue: r.normalized_value, quote: r.quote, decision },
+      ];
+    })
+  );
+}
+
+async function latestDecisionId(tx: Tx, valueId: string): Promise<string | null> {
+  const { rows } = await tx.query('SELECT id FROM review_decisions WHERE value_id = $1 ORDER BY created_at DESC LIMIT 1', [valueId]);
+  return rows[0]?.id ?? null;
+}
+
+async function persistField(tx: Tx, job: ClaimedJob, versionId: string, pf: ProcessedField, prior: PriorFieldState | undefined) {
+  const { field, extraction, validations, disposition } = pf;
+  const carry = decideCarryOver(field, extraction, prior);
+  let reviewState: 'pending' | 'approved' | 'corrected' | 'carried_over' = 'pending';
+  let finalValue: string | null = null;
+  if (carry.kind === 'carry_over') {
+    reviewState = 'carried_over';
+    finalValue = carry.finalValue;
+  } else if (disposition === 'auto_approved') {
+    reviewState = 'approved';
+    finalValue = extraction.normalizedValue;
+  }
+  const threshold = field.reviewPolicy?.mode === 'threshold' ? (field.reviewPolicy.confidenceThreshold ?? 1) : null;
+  const { rows } = await tx.query(
+    `INSERT INTO extracted_values (tenant_id, document_version_id, semantic_key, label, field_type, required, method, value, normalized_value,
+        gap_reason, unverified, confidence, confidence_source, confidence_threshold, model, prompt_version, interpretation_hash,
+        evidence_fingerprint, disposition, review_state, final_value, carried_from_value_id, previous_value_id, change_reasons, job_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25) RETURNING id`,
+    [
+      job.tenantId, versionId, field.semanticKey, field.displayLabel || field.semanticKey, field.type, Boolean(field.required), extraction.method,
+      extraction.value, extraction.normalizedValue, extraction.gapReason, extraction.unverified ? JSON.stringify(extraction.unverified) : null,
+      extraction.confidence, extraction.confidenceSource, threshold, extraction.model ?? null, extraction.promptVersion ?? null,
+      interpretationHash(field), evidenceFingerprint(field, extraction), disposition, reviewState, finalValue,
+      carry.kind === 'carry_over' ? carry.fromValueId : null,
+      carry.kind === 'reopen' ? carry.fromValueId : null,
+      carry.kind === 'reopen' ? JSON.stringify(carry.reasons) : null,
+      job.id,
+    ]
+  );
+  const valueId = rows[0].id as string;
+  if (extraction.evidence) {
+    const e = extraction.evidence;
+    await tx.query(
+      `INSERT INTO evidence (tenant_id, value_id, document_version_id, page, quote, start_offset, end_offset, box) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [job.tenantId, valueId, versionId, e.page, e.quote, e.start, e.end, e.box ? JSON.stringify(e.box) : null]
+    );
+  }
+  for (const v of validations) {
+    await tx.query(
+      `INSERT INTO validation_results (tenant_id, value_id, document_version_id, rule_id, method, rule_version, outcome, explanation, model,
+         prompt_version, confidence, confidence_source) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+      [job.tenantId, valueId, versionId, v.ruleId, v.method, v.ruleVersion, v.outcome, v.explanation, v.model ?? null, v.promptVersion ?? null, v.confidence ?? null, v.confidenceSource ?? null]
+    );
+  }
+  const evidenceSnapshot = extraction.evidence ? JSON.stringify({ page: extraction.evidence.page, quote: extraction.evidence.quote }) : null;
+  if (carry.kind === 'carry_over') {
+    await tx.query(
+      `INSERT INTO review_decisions (tenant_id, value_id, document_version_id, action, old_value, new_value, actor_kind, authority, evidence_snapshot, carried_from_decision_id)
+       VALUES ($1,$2,$3,'carry_over',NULL,$4,'system',$5,$6,$7)`,
+      [
+        job.tenantId, valueId, versionId, finalValue,
+        JSON.stringify({ policy: 'evidence_unchanged', fromValueId: carry.fromValueId, previousDecision: carry.decisionKind }),
+        evidenceSnapshot, await latestDecisionId(tx, carry.fromValueId),
+      ]
+    );
+  } else if (reviewState === 'approved') {
+    await tx.query(
+      `INSERT INTO review_decisions (tenant_id, value_id, document_version_id, action, old_value, new_value, actor_kind, authority, evidence_snapshot)
+       VALUES ($1,$2,$3,'auto_approve',NULL,$4,'system',$5,$6)`,
+      [
+        job.tenantId, valueId, versionId, finalValue,
+        JSON.stringify({ policy: 'review_threshold', threshold, confidence: extraction.confidence, confidenceSource: extraction.confidenceSource }),
+        evidenceSnapshot,
+      ]
+    );
+  }
+}
+
+async function detectSameTransaction(tx: Tx, tenantId: string, documentId: string, documentTypeId: string, template: TemplateDefinition, fields: ProcessedField[]) {
+  const keys = template.identityKeys ?? [];
+  if (!keys.length) return;
+  const parts = keys.map((k) => fields.find((f) => f.field.semanticKey === k)?.extraction.normalizedValue);
+  if (parts.some((p) => !p)) return;
+  const businessKey = parts.map((p) => p!.toLowerCase()).join('|');
+  await tx.query('UPDATE documents SET business_key = $2, updated_at = now() WHERE id = $1', [documentId, businessKey]);
+  const others = await tx.query(
+    `SELECT id FROM documents WHERE tenant_id = $1 AND document_type_id = $2 AND business_key = $3 AND id <> $4`,
+    [tenantId, documentTypeId, businessKey, documentId]
+  );
+  for (const other of others.rows) {
+    // Flag, never merge: a person decides whether two files describe one transaction.
+    await tx.query(
+      `INSERT INTO document_relations (tenant_id, document_id, related_document_id, kind, reason)
+       VALUES ($1, $2, $3, 'possible_same_transaction', $4) ON CONFLICT DO NOTHING`,
+      [tenantId, documentId, other.id, `Both documents carry the same ${keys.join(' + ')}.`]
+    );
+  }
+}
+
+/** The `process_version` job: parse → extract → verify → validate → carry over → persist. */
+export async function processVersion(ctx: Ctx, job: ClaimedJob): Promise<'succeeded' | 'superseded' | 'failed'> {
+  let versionId = job.subjectId;
+  try {
+    const context = await loadContext(ctx, job);
+    if (!context) {
+      await withTenant(ctx.db, job.tenantId, (tx) => completeJob(tx, job, 'superseded'));
+      return 'superseded';
+    }
+    versionId = context.version.id;
+
+    await setStage(ctx, job.tenantId, versionId, 'parsing');
+    let parsed: ParsedDocument;
+    try {
+      parsed = await extractPdfText(context.bytes);
+    } catch (error) {
+      throw new PermanentProcessingError(`The file could not be read as a PDF (${(error as Error).message}).`, 'Ask the customer to send a valid PDF as a new version.');
+    }
+    await withTenant(ctx.db, job.tenantId, (tx) =>
+      tx.query('UPDATE document_versions SET parsed_text = $2, parser = $3, page_count = $4 WHERE id = $1', [versionId, JSON.stringify(parsed.pages), parsed.parser, parsed.pageCount])
+    );
+
+    const definition = context.template.definition;
+    const needs = {
+      extraction: extractableFields(definition).some((f) => f.extraction?.method === 'llm'),
+      semantic: definition.fields.some((f) => (f.validationRules ?? []).some((r) => r.kind === 'semantic')),
+    };
+    const selection = await selectProviders(ctx.providers, context.tenantSettings, needs);
+
+    const processed = await processDocument(parsed, definition, {
+      extractionProvider: selection.extraction,
+      semanticValidator: selection.semantic,
+      onStage: (stage) => setStage(ctx, job.tenantId, versionId, stage),
+    });
+
+    return await withTenant(ctx.db, job.tenantId, async (tx) => {
+      if (!(await holdsLease(tx, job))) return 'failed'; // lease lost: another worker owns this job now; write nothing
+      const current = (await tx.query('SELECT processing_status FROM document_versions WHERE id = $1 FOR UPDATE', [versionId])).rows[0];
+      if (current.processing_status === 'superseded') {
+        await completeJob(tx, job, 'superseded');
+        return 'superseded';
+      }
+      const prior = context.baseline ? await priorStates(tx, context.baseline.id) : new Map<string, PriorFieldState>();
+      for (const pf of processed.fields) await persistField(tx, job, versionId, pf, prior.get(pf.field.semanticKey));
+      for (const call of processed.modelCalls) {
+        await tx.query(
+          `INSERT INTO model_calls (tenant_id, document_version_id, job_id, purpose, provider, model, prompt_version, prompt, raw_response)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+          [job.tenantId, versionId, job.id, call.purpose, call.provider, call.model, call.promptVersion, call.prompt, call.rawResponse]
+        );
+      }
+      await detectSameTransaction(tx, job.tenantId, context.version.document_id, context.version.document_type_id, definition, processed.fields);
+      await tx.query(
+        `UPDATE document_versions SET processing_status = 'processed', status_changed_at = now(), processed_at = now(),
+           template_version_id = $2, baseline_version_id = $3, model_selection = $4, failure_reason = NULL, failure_action = NULL
+         WHERE id = $1`,
+        [versionId, context.template.id, context.baseline?.id ?? null, JSON.stringify({ notes: selection.notes, fallback: selection.fallbackUsed })]
+      );
+      await completeJob(tx, job, 'succeeded');
+      await audit(tx, {
+        tenantId: job.tenantId,
+        actor: SYSTEM,
+        action: 'document.processed',
+        subjectType: 'document',
+        subjectId: context.version.document_id,
+        detail: {
+          versionId,
+          version: context.version.version,
+          templateVersion: context.template.version,
+          baselineVersion: context.baseline?.version ?? null,
+          fields: processed.fields.length,
+          gaps: processed.fields.filter((f) => f.disposition === 'gap').length,
+          modelSelection: selection.notes,
+          ...(selection.fallbackUsed ? { fallback: selection.fallbackUsed } : {}),
+        },
+      });
+      return 'succeeded';
+    });
+  } catch (error) {
+    const permanent = error instanceof PermanentProcessingError || error instanceof ProviderNotReadyError;
+    const message = error instanceof Error ? error.message : String(error);
+    const action = error instanceof PermanentProcessingError || error instanceof ProviderNotReadyError ? error.action : 'Lomi will retry automatically.';
+    const documentId = await documentIdFor(ctx, job.tenantId, versionId);
+    await withTenant(ctx.db, job.tenantId, async (tx) => {
+      if (!(await holdsLease(tx, job))) return;
+      const outcome = await failJob(tx, job, permanent ? 'permanent' : 'transient', message);
+      const status = outcome.willRetry ? 'failed_retryable' : 'failed_operator';
+      await tx.query(
+        `UPDATE document_versions SET processing_status = $2, failure_reason = $3, failure_action = $4, status_changed_at = now()
+         WHERE id = $1 AND processing_status <> 'superseded'`,
+        [versionId, status, message, outcome.willRetry ? `Retrying automatically in ${outcome.retryInSeconds}s.` : permanent ? action : 'Retry from the operations console once the cause is resolved.']
+      );
+      await audit(tx, {
+        tenantId: job.tenantId, actor: SYSTEM, action: 'document.processing_failed', subjectType: 'document', subjectId: documentId,
+        detail: { versionId, jobId: job.id, attempt: job.attempt, permanent, willRetry: outcome.willRetry, reason: message },
+      });
+    });
+    return 'failed';
+  }
+}

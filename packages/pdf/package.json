@@ -9,12 +9,18 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./text": {
+      "types": "./dist/text/index.d.ts",
+      "import": "./dist/text/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts --sourcemap --clean",
-    "dev": "tsup src/index.ts --format esm --dts --sourcemap --watch",
+    "build": "tsup src/index.ts src/text/index.ts --format esm --dts --sourcemap --clean",
+    "dev": "tsup src/index.ts src/text/index.ts --format esm --dts --sourcemap --watch",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint src",
@@ -22,7 +28,8 @@
   },
   "dependencies": {
     "@lomi/core": "workspace:*",
-    "pdf-lib": "^1.17.1"
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^5.7.284"
   },
   "devDependencies": {
     "@lomi/config": "workspace:*",
