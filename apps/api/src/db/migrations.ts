@@ -494,4 +494,27 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO lomi_app;
 REVOKE UPDATE, DELETE ON schema_migrations FROM lomi_app;
 `,
   },
+  {
+    id: '002_tenant_url_ingress',
+    sql: `
+-- Each customer has exactly one ingress: a tenant URL that accepts electronic (API)
+-- submissions, single uploads and bulk uploads. Email/SFTP ingress kinds are removed.
+ALTER TABLE submissions ADD COLUMN channel text NOT NULL DEFAULT 'upload' CHECK (channel IN ('api', 'upload', 'bulk'));
+ALTER TABLE submissions ADD COLUMN batch_id uuid;
+CREATE INDEX submissions_batch ON submissions (batch_id) WHERE batch_id IS NOT NULL;
+
+-- Backfill the channel of historical receipts that came through the old 'api' endpoint.
+-- submissions is append-only for the application; this one-time correction runs only here.
+ALTER TABLE submissions DISABLE TRIGGER submissions_append_only;
+UPDATE submissions s SET channel = 'api' FROM ingress_endpoints ie WHERE ie.id = s.ingress_id AND ie.key = 'api';
+ALTER TABLE submissions ENABLE TRIGGER submissions_append_only;
+
+UPDATE ingress_endpoints SET enabled = false WHERE key <> 'portal';
+UPDATE ingress_endpoints SET key = 'main', name = 'Tenant ingress URL' WHERE key = 'portal';
+ALTER TABLE ingress_endpoints DROP CONSTRAINT ingress_endpoints_kind_check;
+UPDATE ingress_endpoints SET kind = 'tenant_url';
+ALTER TABLE ingress_endpoints ADD CONSTRAINT ingress_endpoints_kind_check CHECK (kind = 'tenant_url');
+CREATE UNIQUE INDEX ingress_one_active_per_tenant ON ingress_endpoints (tenant_id) WHERE enabled;
+`,
+  },
 ];

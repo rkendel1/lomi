@@ -8,6 +8,8 @@ import { authenticateToken, type AuthenticatedIdentity } from '../capabilities/a
 import type { Ctx } from '../domain/common';
 import { MAX_UPLOAD_BYTES } from '../domain/documents';
 import { DEV_IDENTITIES } from '../seed/identities';
+import { parseMultipart } from './multipart';
+import { API_DOCS_HTML, openApiDocument } from './openapi';
 import { HttpError, invoke, readBody, sendJson, tenantFor, toFetchRequest, writeFetchResponse } from './rest';
 
 function bearer(headers: Readonly<Record<string, string | string[] | undefined>>): string | undefined {
@@ -61,7 +63,7 @@ export function createDocOpsRoutes(ctx: Ctx) {
       if (!ctx.config.devLogin) return false;
       // Development only (LOMI_DEV_LOGIN=1): lists the seeded demo identities so the UI can sign in.
       sendJson(res, 200, {
-        users: DEV_IDENTITIES.filter((u) => u.kind === 'user').map((u) => ({ name: u.name, email: u.email, operator: u.operator, token: u.token, tenants: u.memberships.map((m) => m.tenant) })),
+        users: DEV_IDENTITIES.filter((u) => u.kind === 'user').map((u) => ({ name: u.name, email: u.email, operator: u.operator, experience: u.experience, token: u.token, tenants: u.memberships.map((m) => m.tenant), roles: u.memberships.map((m) => m.role) })),
       });
       return true;
     }
@@ -72,6 +74,59 @@ export function createDocOpsRoutes(ctx: Ctx) {
         id: identity.principal.id, name: identity.principal.displayName, kind: identity.kind, operator: identity.operator,
         memberships: identity.memberships.map((m) => ({ tenantId: m.tenantId, slug: m.slug, role: m.role, permissions: m.permissions })),
       });
+      return true;
+    }
+
+    // ── Tenant ingress URL: one endpoint per customer for API, single and bulk submissions ──
+    const ingressMatch = path.match(/^\/api\/in\/([a-z0-9][a-z0-9-]{1,62})\/documents$/);
+    if (ingressMatch && req.method === 'POST') {
+      const identity = await authenticate(req.headers);
+      const tenant = ingressMatch[1];
+      const type = (req.headers['content-type'] ?? '').split(';')[0].trim();
+      const documentType = url.searchParams.get('documentType') ?? undefined;
+      let documents: Array<{ filename: string; contentBase64: string; documentType?: string; title?: string }>;
+      let channel: 'api' | 'upload' | 'bulk';
+      let formType: string | undefined;
+      if (type === 'multipart/form-data') {
+        const { files, fields } = await parseMultipart(req, { fileBytes: MAX_UPLOAD_BYTES, files: 100 });
+        if (!files.length) throw new HttpError(400, 'No files in the upload (use form field "file").');
+        documents = files.map((f) => ({ filename: f.filename, contentBase64: f.bytes.toString('base64') }));
+        channel = files.length > 1 ? 'bulk' : 'upload';
+        formType = fields.documentType || undefined;
+      } else if (type === 'application/pdf') {
+        documents = [{ filename: url.searchParams.get('filename') ?? 'submission.pdf', contentBase64: (await readBody(req, MAX_UPLOAD_BYTES + 1024)).toString('base64') }];
+        channel = 'api';
+      } else if (type === 'application/json') {
+        const json = JSON.parse((await readBody(req, 140 * 1024 * 1024)).toString('utf8'));
+        documents = Array.isArray(json.documents) ? json.documents : [json];
+        channel = Array.isArray(json.documents) ? 'bulk' : 'api';
+        formType = json.documentType;
+      } else {
+        throw new HttpError(415, 'Send application/pdf, multipart/form-data (field "file", repeatable) or application/json.');
+      }
+      const chosenType = documentType ?? formType;
+      if (documents.length === 1 && channel !== 'bulk') {
+        const d = documents[0];
+        const result = await invoke(application, identity, 'documents.submit', {
+          tenant, filename: d.filename, contentBase64: d.contentBase64, channel,
+          ...(d.documentType ?? chosenType ? { documentType: d.documentType ?? chosenType } : {}),
+          ...(d.title ? { title: d.title } : {}),
+        }, req.headers['idempotency-key'] as string | undefined);
+        sendJson(res, result.outcome === 'duplicate_exact' ? 200 : 202, result, { Location: `/api/documents/${result.documentId}` });
+      } else {
+        const result = await invoke(application, identity, 'documents.batch.submit', { tenant, ...(chosenType ? { documentType: chosenType } : {}), documents });
+        sendJson(res, 202, result);
+      }
+      return true;
+    }
+    if (path === '/api/openapi.json' && req.method === 'GET') {
+      sendJson(res, 200, openApiDocument());
+      return true;
+    }
+    if (path === '/api/docs' && req.method === 'GET') {
+      const html = Buffer.from(API_DOCS_HTML);
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Length': html.length });
+      res.end(html);
       return true;
     }
 
@@ -100,7 +155,7 @@ export function createDocOpsRoutes(ctx: Ctx) {
     if (req.method === 'POST' && (match = m(/^\/documents\/([0-9a-f-]{36})\/versions$/))) {
       const identity = await authenticate(req.headers);
       const input = await uploadInput(req, url);
-      const result = await invoke(application, identity, 'documents.versions.add', { tenant: tenantFor(req, url, identity), documentId: match[1], filename: input.filename, contentBase64: input.contentBase64, ...(input.ingress ? { ingress: input.ingress } : {}) });
+      const result = await invoke(application, identity, 'documents.versions.add', { tenant: tenantFor(req, url, identity), documentId: match[1], filename: input.filename, contentBase64: input.contentBase64 });
       sendJson(res, result.outcome === 'duplicate_exact' ? 200 : 202, result);
       return true;
     }
@@ -159,13 +214,12 @@ export function createDocOpsRoutes(ctx: Ctx) {
         contentBase64: body.toString('base64'),
         ...(p.get('documentType') ? { documentType: p.get('documentType')! } : {}),
         ...(p.get('title') ? { title: p.get('title')! } : {}),
-        ...(p.get('ingress') ? { ingress: p.get('ingress')! } : {}),
       };
     }
     if (type === 'application/json') {
       const json = JSON.parse(body.toString('utf8'));
       if (typeof json.contentBase64 !== 'string' || typeof json.filename !== 'string') throw new HttpError(400, 'JSON uploads need filename and contentBase64');
-      return json as { filename: string; contentBase64: string; documentType?: string; title?: string; ingress?: string };
+      return json as { filename: string; contentBase64: string; documentType?: string; title?: string };
     }
     throw new HttpError(415, 'Upload a PDF as application/pdf (with ?filename=&documentType=) or as JSON with contentBase64');
   }

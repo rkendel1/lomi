@@ -24,6 +24,17 @@ const ctx: Ctx = {
     semanticDefault: config.semanticProvider,
   }),
 };
+// Load local models now so the first submission is processed without a cold start.
+for (const [name, provider] of Object.entries(ctx.providers.semantic)) {
+  const warm = (provider as { warm?: () => Promise<{ ready: boolean; detail: string }> }).warm;
+  if (warm) {
+    const t0 = Date.now();
+    void warm.call(provider).then(
+      (r) => console.log(`[warm] ${name}: ${r.ready ? `ready in ${Date.now() - t0} ms` : `not ready (${r.detail})`}`),
+      (e) => console.warn(`[warm] ${name}: ${(e as Error).message}`)
+    );
+  }
+}
 const handles = startWorker(ctx, { concurrency: Number(process.env.WORKER_CONCURRENCY ?? 4) });
 console.log(
   `lomi-worker ${config.workerId} started; providers: extraction=[${Object.keys(ctx.providers.extraction).join(', ') || 'none'}] ` +

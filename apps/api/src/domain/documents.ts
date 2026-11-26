@@ -116,14 +116,15 @@ function assertPdf(bytes: Uint8Array): void {
   }
 }
 
-async function resolveIngress(tx: Tx, tenantId: string, ingressKey: string | undefined) {
-  const key = ingressKey ?? 'portal';
+export type Channel = 'api' | 'upload' | 'bulk';
+
+/** Each tenant has one ingress: its tenant URL. It accepts API, single-upload and bulk submissions. */
+async function resolveIngress(tx: Tx, tenantId: string) {
   const { rows } = await tx.query(
-    'SELECT id, enabled, default_document_type_id FROM ingress_endpoints WHERE tenant_id = $1 AND key = $2',
-    [tenantId, key]
+    `SELECT id, default_document_type_id FROM ingress_endpoints WHERE tenant_id = $1 AND enabled ORDER BY created_at LIMIT 1`,
+    [tenantId]
   );
-  if (!rows[0]) throw new DomainError('INVALID_INPUT', `Unknown ingress "${key}".`);
-  if (!rows[0].enabled) throw new DomainError('FORBIDDEN', `Ingress "${key}" is disabled.`);
+  if (!rows[0]) throw new DomainError('FORBIDDEN', 'This customer is not accepting submissions (ingress disabled).');
   return rows[0] as { id: string; default_document_type_id: string | null };
 }
 
@@ -178,18 +179,19 @@ export async function submitDocument(
     documentTypeKey?: string;
     filename: string;
     bytes: Uint8Array;
-    ingressKey?: string;
+    channel?: Channel;
+    batchId?: string;
     title?: string;
     idempotencyKey?: string;
   }
 ): Promise<SubmissionResult> {
   assertPdf(input.bytes);
   const sha256 = sha256Hex(input.bytes);
-  return withTenant(ctx.db, input.tenantId, async (tx) => {
+  const result = await withTenant(ctx.db, input.tenantId, async (tx): Promise<SubmissionResult> => {
     const replay = await replayIdempotent(tx, input.tenantId, input.idempotencyKey);
     if (replay) return replay;
 
-    const ingress = await resolveIngress(tx, input.tenantId, input.ingressKey);
+    const ingress = await resolveIngress(tx, input.tenantId);
     const typeRow = input.documentTypeKey
       ? (await tx.query('SELECT id FROM document_types WHERE tenant_id = $1 AND key = $2', [input.tenantId, input.documentTypeKey])).rows[0]
       : ingress.default_document_type_id
@@ -201,13 +203,13 @@ export async function submitDocument(
     if (duplicate) {
       // The same bytes were already received (possibly via another ingress). Record the receipt; create nothing new.
       const { rows } = await tx.query(
-        `INSERT INTO submissions (tenant_id, ingress_id, submitted_by, document_id, document_version_id, sha256, filename, outcome, idempotency_key)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'duplicate_exact', $8) RETURNING id`,
-        [input.tenantId, ingress.id, actor.principalId, duplicate.document_id, duplicate.id, sha256, input.filename, input.idempotencyKey ?? null]
+        `INSERT INTO submissions (tenant_id, ingress_id, submitted_by, document_id, document_version_id, sha256, filename, outcome, idempotency_key, channel, batch_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'duplicate_exact', $8, $9, $10) RETURNING id`,
+        [input.tenantId, ingress.id, actor.principalId, duplicate.document_id, duplicate.id, sha256, input.filename, input.idempotencyKey ?? null, input.channel ?? 'upload', input.batchId ?? null]
       );
       await audit(tx, {
         tenantId: input.tenantId, actor, action: 'document.duplicate_received', subjectType: 'document', subjectId: duplicate.document_id,
-        detail: { sha256, filename: input.filename, ingress: input.ingressKey ?? 'portal', versionId: duplicate.id },
+        detail: { sha256, filename: input.filename, channel: input.channel ?? 'upload', versionId: duplicate.id },
       });
       return {
         submissionId: rows[0].id,
@@ -228,16 +230,18 @@ export async function submitDocument(
     const documentId = doc.rows[0].id as string;
     const versionId = await insertVersion(tx, input.tenantId, documentId, 1, object.id, sha256, input.filename, input.bytes.length);
     const sub = await tx.query(
-      `INSERT INTO submissions (tenant_id, ingress_id, submitted_by, document_id, document_version_id, sha256, filename, outcome, idempotency_key)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'new_document', $8) RETURNING id`,
-      [input.tenantId, ingress.id, actor.principalId, documentId, versionId, sha256, input.filename, input.idempotencyKey ?? null]
+      `INSERT INTO submissions (tenant_id, ingress_id, submitted_by, document_id, document_version_id, sha256, filename, outcome, idempotency_key, channel, batch_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'new_document', $8, $9, $10) RETURNING id`,
+      [input.tenantId, ingress.id, actor.principalId, documentId, versionId, sha256, input.filename, input.idempotencyKey ?? null, input.channel ?? 'upload', input.batchId ?? null]
     );
     await audit(tx, {
       tenantId: input.tenantId, actor, action: 'document.submitted', subjectType: 'document', subjectId: documentId,
-      detail: { versionId, version: 1, sha256, filename: input.filename, ingress: input.ingressKey ?? 'portal' },
+      detail: { versionId, version: 1, sha256, filename: input.filename, channel: input.channel ?? 'upload' },
     });
     return { submissionId: sub.rows[0].id, documentId, versionId, version: 1, outcome: 'new_document', status: 'queued' };
   });
+  if (result.outcome !== 'duplicate_exact') ctx.dispatchNow?.();
+  return result;
 }
 
 async function insertVersion(
@@ -264,14 +268,14 @@ async function insertVersion(
 export async function addVersion(
   ctx: Ctx,
   actor: Actor,
-  input: { tenantId: string; documentId: string; filename: string; bytes: Uint8Array; ingressKey?: string; idempotencyKey?: string }
+  input: { tenantId: string; documentId: string; filename: string; bytes: Uint8Array; channel?: Channel; batchId?: string; idempotencyKey?: string }
 ): Promise<SubmissionResult> {
   assertPdf(input.bytes);
   const sha256 = sha256Hex(input.bytes);
-  return withTenant(ctx.db, input.tenantId, async (tx) => {
+  const result = await withTenant(ctx.db, input.tenantId, async (tx): Promise<SubmissionResult> => {
     const replay = await replayIdempotent(tx, input.tenantId, input.idempotencyKey);
     if (replay) return replay;
-    const ingress = await resolveIngress(tx, input.tenantId, input.ingressKey);
+    const ingress = await resolveIngress(tx, input.tenantId);
     // Lock the document so concurrent uploads get distinct, ordered version numbers.
     const doc = await tx.query('SELECT id FROM documents WHERE id = $1 AND tenant_id = $2 FOR UPDATE', [input.documentId, input.tenantId]);
     if (!doc.rows[0]) throw notFound('Document');
@@ -279,9 +283,9 @@ export async function addVersion(
     const duplicate = await findExactDuplicate(tx, input.tenantId, sha256);
     if (duplicate) {
       const { rows } = await tx.query(
-        `INSERT INTO submissions (tenant_id, ingress_id, submitted_by, document_id, document_version_id, sha256, filename, outcome, idempotency_key)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'duplicate_exact', $8) RETURNING id`,
-        [input.tenantId, ingress.id, actor.principalId, duplicate.document_id, duplicate.id, sha256, input.filename, input.idempotencyKey ?? null]
+        `INSERT INTO submissions (tenant_id, ingress_id, submitted_by, document_id, document_version_id, sha256, filename, outcome, idempotency_key, channel, batch_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'duplicate_exact', $8, $9, $10) RETURNING id`,
+        [input.tenantId, ingress.id, actor.principalId, duplicate.document_id, duplicate.id, sha256, input.filename, input.idempotencyKey ?? null, input.channel ?? 'upload', input.batchId ?? null]
       );
       await audit(tx, {
         tenantId: input.tenantId, actor, action: 'document.duplicate_received', subjectType: 'document', subjectId: input.documentId,
@@ -312,9 +316,9 @@ export async function addVersion(
     const object = await storeObject(tx, ctx.store, input.tenantId, input.bytes, 'application/pdf');
     const versionId = await insertVersion(tx, input.tenantId, input.documentId, next, object.id, sha256, input.filename, input.bytes.length);
     const sub = await tx.query(
-      `INSERT INTO submissions (tenant_id, ingress_id, submitted_by, document_id, document_version_id, sha256, filename, outcome, idempotency_key)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'new_version', $8) RETURNING id`,
-      [input.tenantId, ingress.id, actor.principalId, input.documentId, versionId, sha256, input.filename, input.idempotencyKey ?? null]
+      `INSERT INTO submissions (tenant_id, ingress_id, submitted_by, document_id, document_version_id, sha256, filename, outcome, idempotency_key, channel, batch_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'new_version', $8, $9, $10) RETURNING id`,
+      [input.tenantId, ingress.id, actor.principalId, input.documentId, versionId, sha256, input.filename, input.idempotencyKey ?? null, input.channel ?? 'upload', input.batchId ?? null]
     );
     await audit(tx, {
       tenantId: input.tenantId, actor, action: 'document.version_added', subjectType: 'document', subjectId: input.documentId,
@@ -322,6 +326,8 @@ export async function addVersion(
     });
     return { submissionId: sub.rows[0].id, documentId: input.documentId, versionId, version: next, outcome: 'new_version', status: 'queued' };
   });
+  if (result.outcome !== 'duplicate_exact') ctx.dispatchNow?.();
+  return result;
 }
 
 async function hasOutput(tx: Tx, versionId: string): Promise<boolean> {
@@ -346,6 +352,10 @@ export async function documentSummary(tx: Tx, row: Record<string, any>) {
     statusLabel: STATUS_LABELS[status],
     failureReason: (row.failure_reason as string | null) ?? null,
     progress,
+    warning:
+      progress && progress.total > 0 && progress.gaps >= Math.ceil(progress.total / 2)
+        ? `Most fields (${progress.gaps} of ${progress.total}) were not found. This may not be a ${row.type_name as string}; check the original before reviewing.`
+        : null,
     nextAction: nextAction(status, progress, row.failure_action ?? null),
     relatedDocuments: Number(row.related_count ?? 0),
   };
@@ -621,5 +631,23 @@ export async function originalFile(ctx: Ctx, input: { tenantId: string; document
     if (!rows[0]) throw notFound('Document version');
     const { loadObject } = await import('../storage/objectStore');
     return { filename: rows[0].filename as string, bytes: await loadObject(tx, ctx.store, rows[0].object_id) };
+  });
+}
+
+/**
+ * The next document waiting for a human decision, oldest first. Used to move a
+ * reviewer straight to the next document when they finish one.
+ */
+export async function nextForReview(ctx: Ctx, input: { tenantId: string; after?: string }) {
+  return withTenant(ctx.db, input.tenantId, async (tx) => {
+    const { rows } = await tx.query(
+      `SELECT d.id, d.title, count(*) OVER ()::int AS remaining
+       FROM documents d JOIN document_versions dv ON dv.id = d.current_version_id
+       WHERE d.tenant_id = $1 AND dv.processing_status = 'processed' AND d.id <> coalesce($2::uuid, '00000000-0000-0000-0000-000000000000')
+         AND EXISTS (SELECT 1 FROM extracted_values ev WHERE ev.document_version_id = dv.id AND ev.review_state = 'pending')
+       ORDER BY dv.processed_at, d.created_at LIMIT 1`,
+      [input.tenantId, input.after ?? null]
+    );
+    return rows[0] ? { documentId: rows[0].id as string, title: rows[0].title as string, remaining: rows[0].remaining as number } : { documentId: null, title: null, remaining: 0 };
   });
 }

@@ -133,7 +133,7 @@ export async function listFailures(ctx: Ctx, input: { tenantId?: string }) {
 }
 
 export async function retryJob(ctx: Ctx, actor: Actor, input: { tenantId: string; jobId: string }) {
-  return withTenant(ctx.db, input.tenantId, async (tx) => {
+  const result = await withTenant(ctx.db, input.tenantId, async (tx) => {
     const job = (await tx.query('SELECT id, kind, subject_id, status FROM jobs WHERE id = $1', [input.jobId])).rows[0];
     if (!job) throw notFound('Job');
     if (job.status !== 'failed') throw new DomainError('CONFLICT', `Only failed jobs can be retried (this one is ${job.status}).`);
@@ -149,6 +149,8 @@ export async function retryJob(ctx: Ctx, actor: Actor, input: { tenantId: string
     await requeueJob(tx, job.id);
     return { jobId: job.id as string, status: 'queued' };
   });
+  ctx.dispatchNow?.();
+  return result;
 }
 
 /** Provider readiness as last reported by workers. The API never loads model runtimes itself. */

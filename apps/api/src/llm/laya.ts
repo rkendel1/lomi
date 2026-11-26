@@ -100,6 +100,13 @@ export class LayaSemanticValidator implements SemanticValidator {
     return this.runtime;
   }
 
+  /** Load the model ahead of the first document. Does nothing if the model is not installed. */
+  async warm(): Promise<ProviderReadiness> {
+    const readiness = await this.readiness();
+    if (readiness.ready) await this.getRuntime();
+    return readiness;
+  }
+
   private request(check: SemanticCheckRequest) {
     const d = check.decision;
     const kind =

@@ -90,8 +90,8 @@ export async function seedDocuments(ctx: Ctx, tenantIds: Record<string, string>,
   const invoice = await submitDocument(ctx, riley, { tenantId: lakeside, documentTypeKey: 'invoice', filename: 'northwind-INV-2026-0147.pdf', title: 'Northwind invoice INV-2026-0147', bytes: await invoicePdf(INVOICE_V1) });
   await submitDocument(ctx, riley, { tenantId: lakeside, documentTypeKey: 'lease', filename: 'market-st-lease-excerpt.pdf', title: '455 Market St lease excerpt', bytes: await leaseExcerptPdf() });
   await submitDocument(ctx, riley, { tenantId: lakeside, documentTypeKey: 'market_report', filename: 'denver-office-q1-2026.pdf', title: 'Downtown Denver office Q1 2026', bytes: await marketReportPdf() });
-  // The same invoice arriving again through the API ingress is recognised, not duplicated.
-  await submitDocument(ctx, { ...riley, displayName: 'AP mailbox integration' }, { tenantId: lakeside, documentTypeKey: 'invoice', ingressKey: 'api', filename: 'fwd-northwind.pdf', bytes: await invoicePdf(INVOICE_V1) });
+  // The same invoice arriving again electronically through the tenant URL is recognised, not duplicated.
+  await submitDocument(ctx, { ...riley, displayName: 'AP mailbox integration' }, { tenantId: lakeside, documentTypeKey: 'invoice', channel: 'api', filename: 'fwd-northwind.pdf', bytes: await invoicePdf(INVOICE_V1) });
   // Summit's data is entirely separate.
   await submitDocument(ctx, riley, { tenantId: tenantIds.summit, documentTypeKey: 'invoice', filename: 'summit-INV-2026-0901.pdf', title: 'Northwind invoice INV-2026-0901', bytes: await invoicePdf({ ...INVOICE_V1, number: 'INV-2026-0901' }) }).catch(() => undefined);
 

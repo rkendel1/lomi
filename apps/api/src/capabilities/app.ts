@@ -1,15 +1,16 @@
+import { randomUUID } from 'node:crypto';
 import { createApplication, defineCapability, type AnyCapability, type AppPortApplication } from '@appport/core';
 import { authorizerFrom, combineAuthorizers, deny, permissionAuthorizer, type AuthorizationRequest } from '@appport/authorization';
 import { errors, type JsonValue, type Session } from '@appport/protocol';
 import { s } from '@appport/schema';
 import type { TemplateDefinition } from '@lomi/docops';
 import { audit, DomainError, type Actor, type Ctx } from '../domain/common';
-import { addVersion, getDocument, getProgress, listDocuments, originalFile, submitDocument } from '../domain/documents';
+import { addVersion, getDocument, getProgress, listDocuments, nextForReview, originalFile, submitDocument } from '../domain/documents';
 import { generatedFile, requestGeneration, verifyGenerated } from '../domain/generation';
 import { listFailures, operationalStats, providerReadiness, provenance, retryJob } from '../domain/operations';
-import { proposeCorrection, reviewValue } from '../domain/review';
+import { approveVerified, proposeCorrection, reviewValue } from '../domain/review';
 import { basePdfFile, createDocumentType, getTemplate, listTemplates, publishTemplate, saveDraft, uploadBasePdf } from '../domain/templates';
-import { configureIngress, createTenant, ingressList, listTenants, resolveTenant, updateModelSettings } from '../domain/tenants';
+import { configureIngress, createTenant, ingressInfo, listTenants, resolveTenant, updateModelSettings } from '../domain/tenants';
 import { withSystem } from '../db/pool';
 import type { MembershipClaim } from './auth';
 
@@ -166,6 +167,7 @@ export function buildApplication(ctx: Ctx): AppPortApplication {
   const anyObject = s.record(s.unknown());
   const list = s.object({ items: s.array(s.unknown()) });
   const tenant = s.string();
+  const channel = s.enum(['api', 'upload', 'bulk']);
   const b64 = (bytes: Uint8Array) => Buffer.from(bytes).toString('base64');
   const fromB64 = (value: string) => new Uint8Array(Buffer.from(value, 'base64'));
 
@@ -206,13 +208,15 @@ export function buildApplication(ctx: Ctx): AppPortApplication {
       run: async ({ tenant: _t, ...rest }, c) => updateModelSettings(ctx, c.actor, { tenantId: c.tenantId, ...rest }),
     }),
     cap({
-      name: 'ingress.list', description: 'Ingress endpoints configured for a tenant.', permissions: ['templates.read'], effect: 'observation',
-      input: s.object({ tenant }), output: list, run: async (_i, c) => ({ items: await ingressList(ctx, c.tenantId) }),
+      name: 'ingress.get', description: "The tenant's ingress URL (one URL for API, single and bulk submissions).", permissions: ['documents.read'], effect: 'observation',
+      input: s.object({ tenant }),
+      output: s.object({ tenant: s.string(), enabled: s.boolean(), defaultDocumentType: s.nullable(s.string()), submissionPage: s.string(), apiEndpoint: s.string() }),
+      run: async (_i, c) => ingressInfo(ctx, c.tenantId),
     }),
     cap({
-      name: 'ingress.configure', description: 'Create or update an ingress endpoint.', permissions: ['lomi.ingress.manage'], effect: 'consequential',
-      input: s.object({ tenant, key: s.string(), kind: s.enum(['portal', 'api', 'email', 'sftp']), name: s.string(), documentType: s.optional(s.string()), enabled: s.optional(s.boolean()) }),
-      output: s.object({ key: s.string(), enabled: s.boolean() }),
+      name: 'ingress.configure', description: "Enable/disable the tenant's ingress and set its default document type.", permissions: ['lomi.ingress.manage'], effect: 'consequential',
+      input: s.object({ tenant, defaultDocumentType: s.optional(s.nullable(s.string())), enabled: s.optional(s.boolean()) }),
+      output: s.object({ tenant: s.string(), enabled: s.boolean(), defaultDocumentType: s.nullable(s.string()), submissionPage: s.string(), apiEndpoint: s.string() }),
       run: async ({ tenant: _t, ...rest }, c) => configureIngress(ctx, c.actor, { tenantId: c.tenantId, ...rest }),
     }),
 
@@ -261,15 +265,36 @@ export function buildApplication(ctx: Ctx): AppPortApplication {
     // ── Documents ──────────────────────────────────────────────────────────
     cap({
       name: 'documents.submit', description: 'Submit a PDF. Returns after durable acceptance; processing is asynchronous.', permissions: ['documents.submit'], effect: 'consequential', idempotent: true,
-      input: s.object({ tenant, filename: s.string(), contentBase64: s.string(), documentType: s.optional(s.string()), ingress: s.optional(s.string()), title: s.optional(s.string()), idempotencyKey: s.optional(s.string()) }),
+      input: s.object({ tenant, filename: s.string(), contentBase64: s.string(), documentType: s.optional(s.string()), channel: s.optional(channel), title: s.optional(s.string()), idempotencyKey: s.optional(s.string()) }),
       output: submission,
-      run: async (i, c) => submitDocument(ctx, c.actor, { tenantId: c.tenantId, documentTypeKey: i.documentType, filename: i.filename, bytes: fromB64(i.contentBase64), ingressKey: i.ingress, title: i.title, idempotencyKey: i.idempotencyKey }),
+      run: async (i, c) => submitDocument(ctx, c.actor, { tenantId: c.tenantId, documentTypeKey: i.documentType, filename: i.filename, bytes: fromB64(i.contentBase64), channel: i.channel ?? 'api', title: i.title, idempotencyKey: i.idempotencyKey }),
+    }),
+    cap({
+      name: 'documents.batch.submit', description: 'Submit several PDFs at once (bulk). Each file is accepted or rejected on its own; processing starts immediately.', permissions: ['documents.submit'], effect: 'consequential',
+      input: s.object({ tenant, documentType: s.optional(s.string()), documents: s.array(s.object({ filename: s.string(), contentBase64: s.string(), documentType: s.optional(s.string()), title: s.optional(s.string()) })) }),
+      output: s.object({ batchId: s.string(), accepted: s.integer(), rejected: s.integer(), results: s.array(s.unknown()) }),
+      run: async (i, c) => {
+        if (i.documents.length === 0) throw errors.invalidInput('documents must not be empty');
+        if (i.documents.length > 100) throw errors.invalidInput('At most 100 documents per batch');
+        const batchId = randomUUID();
+        const results: unknown[] = [];
+        for (const d of i.documents) {
+          try {
+            const r = await submitDocument(ctx, c.actor, { tenantId: c.tenantId, documentTypeKey: d.documentType ?? i.documentType, filename: d.filename, title: d.title, bytes: fromB64(d.contentBase64), channel: 'bulk', batchId });
+            results.push({ filename: d.filename, ok: true, ...r });
+          } catch (error) {
+            results.push({ filename: d.filename, ok: false, error: (error as Error).message });
+          }
+        }
+        const accepted = results.filter((r) => (r as { ok: boolean }).ok).length;
+        return { batchId, accepted, rejected: results.length - accepted, results };
+      },
     }),
     cap({
       name: 'documents.versions.add', description: 'Submit a revised PDF as a new immutable version of a document.', permissions: ['documents.submit'], effect: 'consequential', idempotent: true,
-      input: s.object({ tenant, documentId: s.string(), filename: s.string(), contentBase64: s.string(), ingress: s.optional(s.string()), idempotencyKey: s.optional(s.string()) }),
+      input: s.object({ tenant, documentId: s.string(), filename: s.string(), contentBase64: s.string(), channel: s.optional(channel), idempotencyKey: s.optional(s.string()) }),
       output: submission,
-      run: async (i, c) => addVersion(ctx, c.actor, { tenantId: c.tenantId, documentId: i.documentId, filename: i.filename, bytes: fromB64(i.contentBase64), ingressKey: i.ingress, idempotencyKey: i.idempotencyKey }),
+      run: async (i, c) => addVersion(ctx, c.actor, { tenantId: c.tenantId, documentId: i.documentId, filename: i.filename, bytes: fromB64(i.contentBase64), channel: i.channel ?? 'api', idempotencyKey: i.idempotencyKey }),
     }),
     cap({
       name: 'documents.list', description: 'Search and filter documents with status, progress and next action.', permissions: ['documents.read'], effect: 'observation',
@@ -299,7 +324,22 @@ export function buildApplication(ctx: Ctx): AppPortApplication {
       },
     }),
 
+    cap({
+      name: 'documents.next', description: 'The next document waiting for a human decision (oldest first), excluding `after`.', permissions: ['documents.read'], effect: 'observation',
+      input: s.object({ tenant, after: s.optional(s.string()) }),
+      output: s.object({ documentId: s.nullable(s.string()), title: s.nullable(s.string()), remaining: s.integer() }),
+      run: async (i, c) => nextForReview(ctx, { tenantId: c.tenantId, after: i.after }),
+    }),
+
     // ── Review ─────────────────────────────────────────────────────────────
+    cap({
+      name: 'values.verified.approve',
+      description: 'Approve every pending value with verified evidence and no failed, uncertain or errored checks. Each is recorded as its own human decision; gaps and flagged values are left for individual review.',
+      permissions: ['reviews.decide'], effect: 'consequential',
+      input: s.object({ tenant, documentId: s.string(), note: s.optional(s.string()) }),
+      output: s.object({ approved: s.integer(), progress: anyObject }),
+      run: async (i, c) => (await approveVerified(ctx, c.actor, { tenantId: c.tenantId, documentId: i.documentId, note: i.note })) as unknown as { approved: number; progress: Record<string, unknown> },
+    }),
     cap({
       name: 'values.review', description: 'Approve or correct one extracted value. People only; agents use values.propose.', permissions: ['reviews.decide'], effect: 'consequential',
       input: s.object({ tenant, valueId: s.string(), action: s.enum(['approve', 'correct']), value: s.optional(s.nullable(s.string())), note: s.optional(s.string()), proposalId: s.optional(s.string()) }),
