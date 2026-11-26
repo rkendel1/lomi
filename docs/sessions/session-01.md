@@ -236,3 +236,36 @@ Docker Compose changes, seed script.
   Vite variant (optional peer), breaking `@lomi/web` typecheck. Moved `tsx` to
   the workspace root and relinked; typecheck green again.
 - CI now runs PostgreSQL and Redis services so integration tests run there.
+
+## 8. User interface
+
+- coordtool's mapper (`App.tsx`) moved with `git mv` to
+  `components/studio/Mapper.tsx`; optional props (initial file/fields, change
+  callback, header controls) let Schema Studio edit template versions, while
+  the no-props behaviour and original tests are unchanged.
+- `PDFViewer` gained a read-only mode and highlight colour; the document
+  detail page renders verified evidence boxes through it. `FieldEditor` gained
+  a document-operations section (extraction method/pattern/instructions,
+  review policy, validation rules as JSON).
+- New shell: sign-in (dev identities only with `LOMI_DEV_LOGIN=1`), tenant
+  switcher, Documents (list/search/filter/upload, status, progress, next
+  action), document detail (fields needing attention first, evidence, checks,
+  previous values and why they reopened, carry-over, agent proposals,
+  approve/correct with notes, versions, history, outputs with reproducibility
+  check), Operations (KPIs from records, failures with retry, corrections by
+  field/template, model checks vs reviewer decisions, model policy and
+  external-processing authorization, worker provider readiness, new customer),
+  Schema Studio (document types, versions, base PDF upload, draft/publish).
+- The UI calls AppPort capabilities like any other client.
+- Verified in a real browser (Playwright) against the compose stack: revised
+  invoice shows 2 pending / 7 carried over; the due-date card shows old and
+  new values and quotes; approving both and generating reaches Completed.
+- Bugs found by driving the UI:
+  1. The PDF viewer never rendered: nginx served `pdf.worker.min.mjs` as
+     `application/octet-stream`, which browsers refuse for module scripts.
+     This existed in the original coordtool Docker setup. Fixed in nginx.conf.
+  2. Evidence quotes for lease fields included the next label
+     ("Landlord: Riverbend Holdings LP Tenant:") because the fixture patterns
+     used it as a terminator. Fixed with lookaheads; all 21 fixture quotes
+     re-checked.
+- `scripts/ui-smoke.cjs` re-runs the browser check (PASS).

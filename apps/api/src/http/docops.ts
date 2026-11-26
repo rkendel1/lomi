@@ -138,6 +138,14 @@ export function createDocOpsRoutes(ctx: Ctx) {
       res.end(bytes);
       return true;
     }
+    if (req.method === 'GET' && (match = m(/^\/templates\/basepdfs\/([0-9a-f-]{36})\/file$/))) {
+      const identity = await authenticate(req.headers);
+      const file = await invoke(application, identity, 'templates.basepdfs.download', { tenant: tenantFor(req, url, identity), basePdfId: match[1] });
+      const bytes = Buffer.from(file.contentBase64, 'base64');
+      res.writeHead(200, { 'Content-Type': 'application/pdf', 'Content-Length': bytes.length, 'Cache-Control': 'private, no-store' });
+      res.end(bytes);
+      return true;
+    }
     return false;
   };
 

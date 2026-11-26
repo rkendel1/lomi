@@ -1,5 +1,6 @@
 import React from 'react';
 import { Field, FieldType, SemanticDataType } from '@lomi/core';
+import { FieldOperationsEditor } from './FieldOperationsEditor';
 import { requiresSemanticCorrection, suggestSemanticKey } from '@lomi/core';
 import { getOverflowWarning } from '@lomi/core';
 import './FieldEditor.css';
@@ -586,6 +587,8 @@ export const FieldEditor: React.FC<Props> = ({ field, onChange, onDelete }) => {
           )}
         </>
       )}
+
+      <FieldOperationsEditor field={field} update={update} />
 
       <div className="fe-coords">
         <span>x: {Math.round(field.x)}</span>

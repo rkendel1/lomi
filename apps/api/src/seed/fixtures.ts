@@ -154,7 +154,7 @@ const LONG_DATE = '([A-Z][a-z]+ \\d{1,2}, \\d{4})';
 export const INVOICE_FIELDS: Field[] = [
   field(0, 'vendor.name', 'Vendor', 'text', {
     required: true,
-    ...pattern('Vendor: (.+?) \\d'),
+    ...pattern('Vendor: (.+?)(?= \\d)'),
     validationRules: [{ kind: 'semantic', prompt: 'Is the extracted value the name of a company or organization?', decision: { type: 'yes_no' } }],
   }),
   field(1, 'invoice.number', 'Invoice number', 'text', { required: true, ...pattern('Invoice Number: ([A-Z0-9-]+)'), validationRules: [{ kind: 'regex', pattern: '^INV-\\d{4}-\\d{4}$', message: 'Invoice numbers look like INV-YYYY-NNNN.' }] }),
@@ -187,8 +187,8 @@ export const INVOICE_TEMPLATE: TemplateDefinition = {
 
 export const LEASE_TEMPLATE: TemplateDefinition = {
   fields: [
-    field(0, 'lease.landlord', 'Landlord', 'text', { required: true, ...pattern('Landlord: (.+?) Tenant:') }),
-    field(1, 'lease.tenant', 'Tenant', 'text', { required: true, ...pattern('Tenant: (.+?) Premises:') }),
+    field(0, 'lease.landlord', 'Landlord', 'text', { required: true, ...pattern('Landlord: (.+?)(?= Tenant:)') }),
+    field(1, 'lease.tenant', 'Tenant', 'text', { required: true, ...pattern('Tenant: (.+?)(?= Premises:)') }),
     field(2, 'lease.premises', 'Premises', 'text', {
       required: true, ...pattern('Premises: (.+?\\d{5})'),
       validationRules: [{ kind: 'semantic', prompt: 'Is the extracted value a street address?', decision: { type: 'yes_no' } }],
@@ -204,7 +204,7 @@ export const LEASE_TEMPLATE: TemplateDefinition = {
 
 export const MARKET_REPORT_TEMPLATE: TemplateDefinition = {
   fields: [
-    field(0, 'report.market', 'Market', 'text', { required: true, ...pattern('Market: (.+?) Reporting Period:') }),
+    field(0, 'report.market', 'Market', 'text', { required: true, ...pattern('Market: (.+?)(?= Reporting Period:)') }),
     field(1, 'report.period', 'Period', 'text', { required: true, ...pattern('Reporting Period: (Q[1-4] \\d{4})') }),
     field(2, 'report.vacancy_rate', 'Vacancy rate (%)', 'text', {
       dataType: 'number', required: true, ...pattern('Vacancy Rate: ([\\d.]+)%'),

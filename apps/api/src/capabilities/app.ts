@@ -8,7 +8,7 @@ import { addVersion, getDocument, getProgress, listDocuments, originalFile, subm
 import { generatedFile, requestGeneration, verifyGenerated } from '../domain/generation';
 import { listFailures, operationalStats, providerReadiness, provenance, retryJob } from '../domain/operations';
 import { proposeCorrection, reviewValue } from '../domain/review';
-import { createDocumentType, getTemplate, listTemplates, publishTemplate, saveDraft, uploadBasePdf } from '../domain/templates';
+import { basePdfFile, createDocumentType, getTemplate, listTemplates, publishTemplate, saveDraft, uploadBasePdf } from '../domain/templates';
 import { configureIngress, createTenant, ingressList, listTenants, resolveTenant, updateModelSettings } from '../domain/tenants';
 import { withSystem } from '../db/pool';
 import type { MembershipClaim } from './auth';
@@ -225,6 +225,14 @@ export function buildApplication(ctx: Ctx): AppPortApplication {
       name: 'templates.get', description: 'One template version with its field definitions.', permissions: ['templates.read'], effect: 'observation',
       input: s.object({ tenant, templateVersionId: s.string() }), output: anyObject,
       run: async (i, c) => (await getTemplate(ctx, { tenantId: c.tenantId, templateVersionId: i.templateVersionId })) as unknown as Record<string, unknown>,
+    }),
+    cap({
+      name: 'templates.basepdfs.download', description: "Download a template's immutable base PDF.", permissions: ['templates.read'], effect: 'observation',
+      input: s.object({ tenant, basePdfId: s.string() }), output: s.object({ filename: s.string(), contentBase64: s.string() }),
+      run: async (i, c) => {
+        const f = await basePdfFile(ctx, { tenantId: c.tenantId, basePdfId: i.basePdfId });
+        return { filename: f.filename, contentBase64: b64(f.bytes) };
+      },
     }),
     cap({
       name: 'templates.documenttypes.create', description: 'Add a document type to a tenant.', permissions: ['lomi.templates.write'], effect: 'consequential',
