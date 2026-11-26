@@ -269,3 +269,53 @@ Docker Compose changes, seed script.
      used it as a terminator. Fixed with lookaheads; all 21 fixture quotes
      re-checked.
 - `scripts/ui-smoke.cjs` re-runs the browser check (PASS).
+
+## 9. End-to-end tests, documentation, final verification
+
+- `e2e.test.ts` (3): the complete customer workflow over HTTP with a real
+  BullMQ worker; a new published template version leaves earlier documents and
+  outputs unchanged (byte-identical re-render) while new documents use it;
+  concurrent versions (latest wins, earlier superseded and kept).
+- One e2e failure was a wrong expectation in the test: a revision whose only
+  decisions are carried over is "Ready for review", not "Review in progress"
+  (the status rule requires a human decision on that version). Kept the rule,
+  fixed the test.
+- Documentation: README (run, demo data, API, tests, troubleshooting),
+  `docs/architecture.md` (product, reuse from coordtool, tenancy, AppPort,
+  data model, durability, extraction/validation, providers, revisions,
+  provenance, operations, trade-offs, deferred work, scaling recommendations),
+  `.env.example`.
+- Corrected a wrong claim while writing the docs: no test exercises the
+  Anthropic adapter's request/response handling; it is documented as unverified.
+- Final verification from a clean slate (`down -v`, rebuilt images): seeded in
+  45 s; UI smoke PASS; resilience check PASS (SIGKILL during parsing →
+  attempt 1 abandoned, attempt 2 succeeded, 9 values; Redis FLUSHALL + restart
+  → 16/16 decisions intact).
+
+## Final status
+
+| Area | Status | Evidence |
+| --- | --- | --- |
+| coordtool preserved and reused | done | viewer, mapper, field model, generators, renderer reused; original tests pass |
+| PostgreSQL model, RLS, append-only history | done | migration applied; RLS probes; integration tests |
+| Durable intake, outbox, leased worker, recovery | done | durability tests; live-stack resilience script |
+| Extraction, evidence verification, validation | done | docops unit tests; workflow tests |
+| Laya in-process, typed decisions, readiness | done | real-model tests; 5 real calls in Docker |
+| Explicit tenant-authorized provider selection | done | provider tests |
+| Anthropic adapter | written, **not verified** | no key available; no test calls it |
+| Review, correction, carry-over, duplicates | done | workflow and e2e tests |
+| Generated documents, reproducibility | done | verify-by-re-render tests |
+| AppPort capabilities, REST, MCP, agents | done | API tests |
+| UI: portal, review, operations, Studio | done | Playwright checks against the stack |
+| Docker Compose one-command start | done | clean-slate run |
+| Lease renewal, S3 store, integrations, streaming | deferred | documented |
+
+Test totals at the end: core 58, docops 19, pdf 49, web 4, api 35 — all
+passing; lint and typecheck clean across 8 packages.
+
+## Publishing note
+
+This log is the sanitized record. The raw agent transcript is kept outside the
+repository and was not committed. Publishing this log as a public Gist was not
+done in the session (no Gist-capable tool was available, and publishing is an
+outward-facing action that needs the owner's go-ahead).

@@ -16,7 +16,7 @@ import { INVOICE_TEMPLATE, outputFormPdf } from '../../seed/fixtures';
 import type { TemplateDefinition } from '@lomi/docops';
 
 export const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL ?? 'postgres://lomi:lomi@localhost:5432/lomi_test';
-export const TEST_REDIS_URL = process.env.TEST_REDIS_URL ?? 'redis://localhost:6379';
+export const TEST_REDIS_URL = process.env.TEST_REDIS_URL ?? 'redis://localhost:6379/15';
 
 export const OPERATOR: Actor = { principalId: null, kind: 'user', displayName: 'test operator' };
 
