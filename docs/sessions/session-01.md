@@ -197,3 +197,42 @@ Docker Compose changes, seed script.
   other tenant and by id under one's own tenant); Lomi-only operations refused
   for customers; agent can read and propose but not decide; manifest and MCP
   `tools/list`/`tools/call` work; anonymous MCP calls are refused.
+
+## 7. Docker Compose and real-stack resilience
+
+- One application image (`apps/api/Dockerfile`) runs api, worker, migrate,
+  models and seed. The API never loads model runtimes; Laya loads in the worker.
+- `models` one-shot: `ml-runtime model install laya` into a named volume, then
+  `model doctor`. The CLI is a pinned v0.3.0 release whose checksum is pinned in
+  `apps/api/docker/install-ml-runtime.mjs` (not fetched beside the archive).
+- Sandbox-specific obstacles (not product changes): Docker Hub returned 429, so
+  official images were pulled from `mirror.gcr.io` and re-tagged locally; the
+  sandbox proxy only allows HTTPS, so builds use host networking and the proxy
+  CA via an uncommitted override file. Product changes that came out of it:
+  the Dockerfiles accept an optional `extra_ca` BuildKit secret (for anyone
+  behind a TLS-intercepting proxy), and the CLI is downloaded with Node instead
+  of apt (fewer packages, works through an HTTPS-only proxy).
+- Base image: started on Debian bookworm; the CLI printed
+  `weak version GLIBC_2.39 not found` (bookworm has 2.36). It still worked, but
+  that is a compatibility risk, so both images moved to `node:22-trixie-slim`
+  (glibc 2.41); warning gone.
+- Clean first run (`down -v`, then `up`): all services healthy/exited 0; seed
+  finished 53 s after `up`, including the Laya download.
+- Real Laya results on the seeded documents (5 model calls): yes/no checks were
+  correct with high confidence (organization 0.90, street address 0.96); the
+  choice check answered "immediately" for "Net 30" (wrong) at confidence 0.15,
+  and the score check was vague at 0.16 — both became `uncertain` and go to a
+  reviewer because of the confidence floor. Conclusion recorded: rely on Laya's
+  yes/no decisions; measure choice/score against reviewer outcomes first.
+- `scripts/resilience-check.sh` against the live stack: SIGKILL of the worker
+  mid-processing → attempt 1 `abandoned` (lease expired), attempt 2
+  `succeeded`, 9 values, no duplicates (~2 min, bounded by the 120 s lease);
+  Redis FLUSHALL + restart → 16/16 review decisions intact, new upload
+  processed. PASS.
+- Known limitation found: leases are not renewed; a job longer than its lease
+  can be re-claimed. Correctness holds (the original worker's commit writes
+  nothing once it lost the lease) but work is wasted. Heartbeat renewal deferred.
+- Regression I caused and fixed: adding `tsx` to `apps/api` created a second
+  Vite variant (optional peer), breaking `@lomi/web` typecheck. Moved `tsx` to
+  the workspace root and relinked; typecheck green again.
+- CI now runs PostgreSQL and Redis services so integration tests run there.
