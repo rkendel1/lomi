@@ -1,0 +1,102 @@
+# Production-ish stack for the shared Hetzner host. Host Caddy terminates TLS and proxies to 127.0.0.1:${LOMI_WEB_PORT}.
+# Differences from the root docker-compose.yml: secrets come from .env, nothing but web is published (localhost only),
+# and LOMI_DEV_DEFAULT_TOKEN is NOT set (no anonymous access). LOMI_DEV_LOGIN stays on because demo identities are the only sign-in.
+name: lomi
+
+x-app: &app
+  image: lomi-app:prod
+  environment: &app-env
+    DATABASE_URL: postgres://lomi:${POSTGRES_PASSWORD}@postgres:5432/lomi
+    REDIS_URL: redis://redis:6379
+    LOMI_STORAGE_DIR: /data/objects
+    ML_RUNTIME_MODEL_DIR: /models
+    LOMI_DEV_LOGIN: "1"
+    LOMI_LAYA: "1"
+    LOMI_SEMANTIC_PROVIDER: laya
+    LOMI_EXTRACTION_PROVIDER: laya
+    ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  volumes:
+    - objects:/data/objects
+    - laya-models:/models
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: lomi
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: lomi
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lomi -d lomi"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: [redisdata:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  migrate:
+    <<: *app
+    build: { context: ../.., dockerfile: apps/api/Dockerfile }
+    command: ["node", "dist/migrate.js"]
+    depends_on: { postgres: { condition: service_healthy } }
+    restart: "no"
+
+  models:
+    <<: *app
+    command: ["sh", "docker/install-models.sh"]
+    user: root
+    restart: "no"
+
+  api:
+    <<: *app
+    environment: { <<: *app-env, LOMI_MIGRATE_ON_START: "0" }
+    command: ["node", "dist/index.js"]
+    depends_on: { migrate: { condition: service_completed_successfully } }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  worker:
+    <<: *app
+    environment: { <<: *app-env, WORKER_ID: worker-1 }
+    command: ["node", "dist/worker.js"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+      models: { condition: service_completed_successfully }
+    restart: unless-stopped
+
+  seed:
+    <<: *app
+    command: ["node", "dist/seed/index.js"]
+    depends_on:
+      api: { condition: service_healthy }
+      worker: { condition: service_started }
+    restart: "no"
+
+  web:
+    build: { context: ../.., dockerfile: apps/web/Dockerfile }
+    ports: ["127.0.0.1:${LOMI_WEB_PORT:-8095}:80"]
+    depends_on: { api: { condition: service_healthy } }
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
+  objects:
+  laya-models:
