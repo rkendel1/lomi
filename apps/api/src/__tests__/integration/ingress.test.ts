@@ -10,6 +10,7 @@ import { createQueue, startWorker, type WorkerHandles } from '../../jobs/queue';
 import { seedConfiguration } from '../../seed/seed';
 import { INVOICE_V1, invoicePdf } from '../../seed/fixtures';
 import { q, setup } from './harness';
+import { PATTERN_TEMPLATES } from './harness';
 
 let ctx: Ctx;
 let server: Server;
@@ -37,8 +38,8 @@ async function until(documentId: string, status: string, timeoutMs: number) {
   const started = Date.now();
   for (;;) {
     const p = await progress(documentId);
-    if (p.status === status) return Date.now() - started;
-    if (Date.now() - started > timeoutMs) throw new Error(`still ${p.status} after ${timeoutMs} ms`);
+    if (p.reviewStatus === status) return Date.now() - started;
+    if (Date.now() - started > timeoutMs) throw new Error(`still ${p.reviewStatus} after ${timeoutMs} ms`);
     await new Promise((r) => setTimeout(r, 50));
   }
 }
@@ -46,7 +47,7 @@ async function until(documentId: string, status: string, timeoutMs: number) {
 beforeAll(async () => {
   ctx = await setup();
   ctx.config = { ...ctx.config, redisUrl: process.env.TEST_REDIS_URL ?? 'redis://localhost:6379/15', queuePrefix: `lomi-ingress-${Date.now()}` };
-  await seedConfiguration(ctx);
+  await seedConfiguration(ctx, { templates: PATTERN_TEMPLATES });
   queue = createQueue(ctx);
   // As in the API process: publish committed work immediately.
   ctx.dispatchNow = () => void dispatchOutbox(ctx.db, queue).catch(() => undefined);

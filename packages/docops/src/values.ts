@@ -54,17 +54,24 @@ export function parseAmount(input: string): number | null {
   return negative ? -value : value;
 }
 
+/** A plain number such as "24", "(24)" or "1,200". Percent signs and currency symbols are not numbers here. */
+export function parseNumber(input: string): number | null {
+  const s = normalizeWhitespace(input).replace(/^\((.*)\)$/, '$1').replace(/,/g, '');
+  return /^-?\d+(\.\d+)?$/.test(s) ? Number(s) : null;
+}
+
 export function amountsIn(text: string): number[] {
   return (text.match(/[$€£]?\s?\d[\d,]*(?:\.\d+)?/g) ?? [])
     .map((token) => Number(token.replace(/[^0-9.]/g, '')))
     .filter((n) => Number.isFinite(n));
 }
 
-export type ValueKind = 'date' | 'amount' | 'text';
+export type ValueKind = 'date' | 'amount' | 'number' | 'text';
 
 export function valueKind(field: Pick<Field, 'type' | 'dataType'>): ValueKind {
   if (field.type === 'date' || field.type === 'dob' || field.dataType === 'date') return 'date';
-  if (field.type === 'currency' || field.dataType === 'currency' || field.dataType === 'number') return 'amount';
+  if (field.type === 'currency' || field.dataType === 'currency') return 'amount';
+  if (field.dataType === 'number') return 'number';
   return 'text';
 }
 
@@ -75,6 +82,10 @@ export function normalizeValue(field: Pick<Field, 'type' | 'dataType'>, value: s
   if (kind === 'amount') {
     const amount = parseAmount(value);
     return amount === null ? null : amount.toFixed(2);
+  }
+  if (kind === 'number') {
+    const n = parseNumber(value);
+    return n === null ? null : String(n);
   }
   const text = normalizeWhitespace(value);
   return text || null;
@@ -97,6 +108,10 @@ export function valueSupportedByQuote(
   if (kind === 'amount') {
     const target = parseAmount(value);
     return target !== null && amountsIn(quote).some((n) => Math.abs(n - Math.abs(target)) < 0.005);
+  }
+  if (kind === 'number') {
+    const target = parseNumber(value);
+    return target !== null && amountsIn(quote).some((n) => n === target);
   }
   return normalizeWhitespace(quote).toLowerCase().includes(normalizeWhitespace(value).toLowerCase());
 }

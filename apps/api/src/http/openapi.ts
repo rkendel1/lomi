@@ -21,7 +21,7 @@ export function openApiDocument() {
     openapi: '3.1.0',
     info: {
       title: 'Lomi Document Operations API',
-      version: '0.2.0',
+      version: '0.3.0',
       description: [
         'Submit documents, follow their processing, review extracted values with verified evidence, and generate output documents.',
         '',
@@ -30,6 +30,8 @@ export function openApiDocument() {
         '**Tenant**: the tenant ingress URL names the tenant in the path (`/api/in/{tenant}/documents`). Other endpoints take the `X-Lomi-Tenant` header (slug or id), or use the caller\'s only tenant.',
         '',
         '**Processing** is asynchronous but starts immediately: a submission returns `202 Accepted` once the file and the processing job are durably stored, and the worker picks it up straight away. Poll `GET /api/documents/{id}/progress`.',
+        '',
+        '**Paths**: every `/api/documents…` and `/api/values…` route is also served without the `/api` prefix (`POST /documents`, `GET /documents/{id}/progress`, …).',
         '',
         '**Same operations, other protocols**: every endpoint here dispatches an AppPort capability. The full capability set is available at `POST /api/appport` (AppPort envelopes) and to agents over MCP at `POST /api/mcp`, with identical authorization.',
       ].join('\n'),
@@ -105,7 +107,7 @@ export function openApiDocument() {
           parameters: [
             tenantHeader,
             { name: 'search', in: 'query', schema: { type: 'string' }, description: 'Matches title, file name or business key (e.g. invoice number).' },
-            { name: 'status', in: 'query', schema: ref('Status') },
+            { name: 'status', in: 'query', schema: ref('ReviewStatus'), description: 'Filter by detailed (review) status.' },
             { name: 'documentType', in: 'query', schema: { type: 'string' } },
           ],
           responses: { '200': json({ type: 'object', properties: { items: { type: 'array', items: ref('DocumentSummary') } } }), ...errors },
@@ -116,7 +118,7 @@ export function openApiDocument() {
           summary: 'Submit one PDF (tenant from header)',
           description: 'Equivalent to an electronic submission to the tenant ingress URL. Prefer `/api/in/{tenant}/documents` for integrations.',
           parameters: [tenantHeader, { name: 'documentType', in: 'query', schema: { type: 'string' } }, { name: 'filename', in: 'query', schema: { type: 'string' } }],
-          requestBody: { required: true, content: { 'application/pdf': { schema: { type: 'string', format: 'binary' } }, 'application/json': { schema: ref('DocumentUpload') } } },
+          requestBody: { required: true, content: { 'multipart/form-data': { schema: ref('MultipartUpload') }, 'application/pdf': { schema: { type: 'string', format: 'binary' } }, 'application/json': { schema: ref('DocumentUpload') } } },
           responses: { '202': json(ref('Submission'), 'Accepted; processing has started'), '200': json(ref('Submission'), 'Exact duplicate'), ...errors },
         },
       },
@@ -136,7 +138,7 @@ export function openApiDocument() {
           summary: 'Submit a revised version',
           description: 'A revision is a new immutable version. Unchanged evidence keeps its review (carried over); changed evidence reopens review. If an earlier version is still processing, the latest version wins and the earlier one is marked superseded.',
           parameters: [tenantHeader, idParam('id', 'Document id'), { name: 'filename', in: 'query', schema: { type: 'string' } }],
-          requestBody: { required: true, content: { 'application/pdf': { schema: { type: 'string', format: 'binary' } }, 'application/json': { schema: ref('DocumentUpload') } } },
+          requestBody: { required: true, content: { 'multipart/form-data': { schema: ref('MultipartUpload') }, 'application/pdf': { schema: { type: 'string', format: 'binary' } }, 'application/json': { schema: ref('DocumentUpload') } } },
           responses: { '202': json(ref('Submission')), '200': json(ref('Submission'), 'Exact duplicate'), ...errors },
         },
       },
@@ -147,6 +149,16 @@ export function openApiDocument() {
           summary: 'Processing and review progress',
           parameters: [tenantHeader, idParam('id', 'Document id')],
           responses: { '200': json(ref('ProgressResponse')), ...errors },
+        },
+      },
+      '/api/documents/{id}/retry': {
+        post: {
+          tags: ['Documents'],
+          operationId: 'retryDocument',
+          summary: 'Retry processing of a failed document',
+          description: 'Requeues the current version when its processing has failed (after automatic retries were exhausted, or a provider was not ready). The previous attempts and their failure reasons are kept.',
+          parameters: [tenantHeader, idParam('id', 'Document id')],
+          responses: { '202': json({ type: 'object' }, 'Requeued'), '409': json(ref('Error'), 'Nothing to retry'), ...errors },
         },
       },
       '/api/documents/{id}/file': {
@@ -254,6 +266,12 @@ export function openApiDocument() {
         },
         Status: {
           type: 'string',
+          description: 'Extraction status (the brief\'s contract): `queued` → `extracting` → `extracted`, or `failed` (retryable via POST /documents/{id}/retry). `superseded` marks a version replaced by a newer one before it finished.',
+          enum: ['queued', 'extracting', 'extracted', 'failed', 'superseded'],
+        },
+        ReviewStatus: {
+          type: 'string',
+          description: 'Detailed lifecycle including review.',
           enum: ['received', 'queued', 'parsing', 'extracting', 'validating', 'awaiting_review', 'partially_reviewed', 'approved', 'completed', 'failed_retryable', 'failed_operator', 'superseded'],
         },
         Submission: {
@@ -264,7 +282,7 @@ export function openApiDocument() {
             versionId: { type: 'string', format: 'uuid' },
             version: { type: 'integer' },
             outcome: { type: 'string', enum: ['new_document', 'new_version', 'duplicate_exact'] },
-            status: ref('Status'),
+            status: ref('ReviewStatus'),
             duplicateOf: { type: 'object', properties: { documentId: { type: 'string' }, versionId: { type: 'string' }, version: { type: 'integer' } } },
           },
         },
@@ -277,6 +295,16 @@ export function openApiDocument() {
             results: { type: 'array', items: { type: 'object', properties: { filename: { type: 'string' }, ok: { type: 'boolean' }, error: { type: 'string' }, documentId: { type: 'string' }, outcome: { type: 'string' } } } },
           },
         },
+        MultipartUpload: {
+          type: 'object',
+          required: ['file'],
+          properties: { file: { type: 'string', format: 'binary' }, type: { type: 'string', description: 'Document type key, e.g. `invoice` (alias: `documentType`)' } },
+        },
+        Receipts: {
+          type: 'object',
+          description: 'How often this document arrived: revisions and identical re-sends (which are recorded, not reprocessed).',
+          properties: { total: { type: 'integer' }, revisions: { type: 'integer' }, identicalResends: { type: 'integer' }, resendChannels: { type: 'array', items: { type: 'string' } } },
+        },
         Progress: {
           type: 'object',
           properties: {
@@ -287,8 +315,9 @@ export function openApiDocument() {
         ProgressResponse: {
           type: 'object',
           properties: {
-            documentId: { type: 'string' }, version: { type: 'integer' }, status: ref('Status'), statusLabel: { type: 'string' },
+            documentId: { type: 'string' }, version: { type: 'integer' }, status: ref('Status'), reviewStatus: ref('ReviewStatus'), statusLabel: { type: 'string' },
             nextAction: { type: 'string' }, failureReason: { type: ['string', 'null'] }, progress: ref('Progress'),
+            counts: { type: 'object', description: 'Review counts of the current version', properties: { pending: { type: 'integer' }, approved: { type: 'integer' }, corrected: { type: 'integer' }, carriedOver: { type: 'integer' }, gaps: { type: 'integer' } } },
           },
         },
         DocumentSummary: {
@@ -297,7 +326,8 @@ export function openApiDocument() {
             id: { type: 'string' }, title: { type: 'string' },
             documentType: { type: 'object', properties: { key: { type: 'string' }, name: { type: 'string' } } },
             currentVersion: { type: 'object', properties: { id: { type: 'string' }, number: { type: 'integer' } } },
-            submittedAt: { type: 'string', format: 'date-time' }, status: ref('Status'), statusLabel: { type: 'string' },
+            submittedAt: { type: 'string', format: 'date-time' }, status: ref('Status'), reviewStatus: ref('ReviewStatus'), statusLabel: { type: 'string' },
+            receipts: ref('Receipts'),
             nextAction: { type: 'string' }, failureReason: { type: ['string', 'null'] }, warning: { type: ['string', 'null'] },
             progress: { oneOf: [ref('Progress'), { type: 'null' }] }, relatedDocuments: { type: 'integer' },
           },
@@ -326,6 +356,7 @@ export function openApiDocument() {
               type: 'object',
               properties: {
                 viewing: { type: 'object' }, versions: { type: 'array', items: { type: 'object' } }, values: { type: 'array', items: ref('Value') },
+                receiptLog: { type: 'array', description: 'Every receipt: first, revision, identical re-send (with channel and time)', items: { type: 'object' } },
                 generated: { type: 'array', items: { type: 'object' } }, related: { type: 'array', items: { type: 'object' } }, history: { type: 'array', items: { type: 'object' } },
               },
             },

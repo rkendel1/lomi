@@ -91,7 +91,7 @@ and outcome.
 ## 5. AppPort: one capability boundary
 
 All application operations are AppPort capabilities (`apps/api/src/capabilities/app.ts`,
-30 capabilities, `@appport/*` pinned at core 1.13.0 / server 1.5.0 / mcp 1.5.0).
+31 capabilities, `@appport/*` pinned at core 1.13.0 / server 1.5.0 / mcp 1.5.0).
 The same application object serves:
 
 | Surface | Path | Notes |
@@ -203,15 +203,32 @@ Worker:           dispatcher: outbox (FOR UPDATE SKIP LOCKED) → BullMQ → mar
   repeats the crash and Redis checks against a live `docker compose` stack.
 
 **Known limitation**: leases are not renewed. A job running longer than
-`JOB_LEASE_SECONDS` (default 120) can be re-claimed; correctness holds (the
+`JOB_LEASE_SECONDS` (default 60) can be re-claimed; correctness holds (the
 first worker's commit writes nothing), but work is duplicated. **Recommended**:
 heartbeat lease extension.
 
 ## 8. Extraction, evidence and validation
 
 - **Extraction methods per field**: `pattern` (deterministic regex: first group
-  is the value, the whole match is the quote) or `llm` (generative provider,
-  one call per document for all LLM fields).
+  is the value, the whole match is the quote) or `llm` (model extraction by the
+  tenant's extraction provider; the field's `instructions` and `valueType` say
+  what to look for).
+- **Laya extraction (default, local)** never generates text. Lomi splits each
+  page into passages (short lines kept whole, prose split into sentences) and
+  proposes typed verbatim candidates per passage (money, dates, percentages,
+  numbers, names — `packages/docops/src/candidates.ts`). Laya answers yes/no:
+  "Does this passage state the {field}?" (all fields in one call per passage),
+  then "Is "{candidate}" the {field}?" for the top passages. The joint score
+  picks the candidate; below the floor (0.25) the field is a gap. The passage
+  is the quote, so verification below is still applied. Prompt version
+  `laya-extract-noul-2`; every call's prompt and raw response is stored.
+  Measured: choice-style decisions picked correctly 1/16; yes/no scoring 12/16;
+  with candidate filtering 14/16; with field instructions 16/16 on the four
+  assignment fixtures (instructions on three fields were written after seeing
+  them — this is not evidence of general accuracy). ~15–20 s per document on CPU.
+- **Anthropic extraction (optional, external)**: one structured-output call per
+  document for all `llm` fields; only for tenants that authorized it. Unverified
+  against the live API.
 - **Evidence verification** (deterministic, never delegated to a model): the
   quote must appear in the parsed page text after collapsing whitespace only;
   case and characters must match. The value must also be stated by its quote
@@ -237,7 +254,7 @@ Roles and options (`apps/api/src/llm`):
 
 | Role | Options |
 | --- | --- |
-| extraction | `anthropic` (generative, external) · `none` (patterns only) |
+| extraction | `laya` (local decision model, default) · `anthropic` (generative, external) · `none` (patterns only) |
 | semantic validation | `laya` (local) · `anthropic` (external) · `none` (recorded as skipped) |
 
 - **Laya** is a structured-decision model served by `rust-ml-runtime`, loaded
@@ -246,7 +263,10 @@ Roles and options (`apps/api/src/llm`):
   loads it. Readiness is checked with the runtime's `selfTest` (no inference);
   a missing model is a configuration failure for an operator, not a retry.
   The model is installed by the one-shot `models` service with the pinned
-  `ml-runtime` CLI into a volume.
+  `ml-runtime` CLI into a volume (`docker/install-models.sh`: retries rate
+  limits/network errors, then exits 0 with a warning so the worker still
+  starts and documents fail visibly as "model not installed" — fix with
+  `docker compose run --rm models`, then Retry).
 - **Anthropic** (official SDK, structured outputs, refusal fallback beta) is
   registered only when `ANTHROPIC_API_KEY` is set.
 - **Selection is explicit and tenant-authorized.** Deployment defaults may only
@@ -277,7 +297,10 @@ rules around it, not its request/response handling. Treat it as unverified.
   changed, not previously reviewed). A matching value with different evidence
   reopens. Corrections carry over as corrections.
 - Exact duplicate bytes (same tenant, any ingress) → a `duplicate_exact`
-  submission pointing at the existing version; nothing reprocessed.
+  submission pointing at the existing version; nothing reprocessed. The list
+  shows `re-sent ×N` / `revised · vN`, the document shows a banner and a
+  Receipts tab (first received, revised → version N, identical re-send of
+  version N — not reprocessed); the API returns `receipts` and `receiptLog`.
 - Same business transaction in a different file → `document_relations`
   "possible same transaction" via the template's identity keys; flagged, never merged.
 - Corrections are new append-only decisions; history is never overwritten

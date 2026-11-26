@@ -18,6 +18,8 @@ export interface Config {
   devLogin: boolean;
   workerId: string;
   leaseSeconds: number;
+  /** Development only: identity used for REST calls that send no token (so curl examples work). */
+  devDefaultToken: string | undefined;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -36,6 +38,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     semanticProvider: env.LOMI_SEMANTIC_PROVIDER || undefined,
     devLogin: env.LOMI_DEV_LOGIN === '1',
     workerId: env.WORKER_ID ?? `worker-${process.pid}`,
-    leaseSeconds: Number(env.JOB_LEASE_SECONDS ?? 120),
+    leaseSeconds: Number(env.JOB_LEASE_SECONDS ?? 60),
+    devDefaultToken: env.LOMI_DEV_DEFAULT_TOKEN || undefined,
   };
 }

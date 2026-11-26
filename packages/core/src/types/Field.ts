@@ -111,7 +111,8 @@ export interface Field {
 /**
  * `pattern` extraction is deterministic: a regular expression whose first capture
  * group is the value and whose whole match is the supporting quote.
- * `llm` extraction asks the configured model, guided by `instructions`.
+ * `llm` extraction asks the configured model (a generative LLM, or a local
+ * decision model choosing among verbatim candidates), guided by `instructions`.
  */
 export type ExtractionMethod = 'pattern' | 'llm';
 
@@ -119,7 +120,10 @@ export interface FieldExtractionConfig {
   method: ExtractionMethod;
   pattern?: string;
   flags?: string;
+  /** What the field means, in plain words. Models use it to tell similar values apart. */
   instructions?: string;
+  /** The kind of value to look for (model extraction). Defaults from the field type. */
+  valueType?: 'string' | 'date' | 'money' | 'number' | 'percent';
 }
 
 export type FieldValidationRule =

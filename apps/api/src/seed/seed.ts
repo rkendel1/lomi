@@ -1,14 +1,12 @@
 import type { TemplateDefinition } from '@lomi/docops';
 import { withSystem } from '../db/pool';
 import type { Actor, Ctx } from '../domain/common';
-import { addVersion, getDocument, submitDocument } from '../domain/documents';
-import { reviewValue } from '../domain/review';
+import { getDocument, submitDocument } from '../domain/documents';
 import { createDocumentType, publishTemplate, saveDraft, uploadBasePdf } from '../domain/templates';
 import { addMembership, createPrincipal, createTenant, issueToken } from '../domain/tenants';
 import { DEV_IDENTITIES } from './identities';
-import {
-  INVOICE_TEMPLATE, INVOICE_V1, INVOICE_V2, invoicePdf, LEASE_TEMPLATE, leaseExcerptPdf, MARKET_REPORT_TEMPLATE, marketReportPdf, outputFormPdf,
-} from './fixtures';
+import { outputFormPdf } from './fixtures';
+import { DOCUMENT_TYPE_NAMES, fixturePdf, loadExpectedFields, loadManifest, templateFromExpected } from './lomiFixtures';
 
 const SEED: Actor = { principalId: null, kind: 'system', displayName: 'seed' };
 
@@ -17,15 +15,23 @@ const TENANTS = [
   { slug: 'summit', name: 'Summit Realty Group' },
 ];
 
-const DOC_TYPES: Array<{ tenant: string; key: string; name: string; template: TemplateDefinition; formTitle: string }> = [
-  { tenant: 'lakeside', key: 'invoice', name: 'Vendor invoice', template: INVOICE_TEMPLATE, formTitle: 'Invoice Approval Record' },
-  { tenant: 'lakeside', key: 'lease', name: 'Lease abstract', template: LEASE_TEMPLATE, formTitle: 'Lease Abstract' },
-  { tenant: 'lakeside', key: 'market_report', name: 'Market report', template: MARKET_REPORT_TEMPLATE, formTitle: 'Market Snapshot' },
-  { tenant: 'summit', key: 'invoice', name: 'Vendor invoice', template: INVOICE_TEMPLATE, formTitle: 'Summit Payables Record' },
-];
+/** Document types and templates come from the assignment fixtures (expected-fields.json). */
+function docTypes(overrides: Record<string, TemplateDefinition> = {}) {
+  const expected = loadExpectedFields();
+  return TENANTS.flatMap((t) =>
+    Object.entries(expected).map(([key, fields]) => ({
+      tenant: t.slug,
+      key,
+      name: DOCUMENT_TYPE_NAMES[key] ?? key,
+      template: overrides[key] ?? templateFromExpected(key, fields),
+      formTitle: `${DOCUMENT_TYPE_NAMES[key] ?? key} — approved values`,
+    }))
+  );
+}
 
 /** Tenants, identities, document types and published templates. Idempotent. */
-export async function seedConfiguration(ctx: Ctx): Promise<Record<string, string>> {
+/** `templates` overrides the fixture-derived template per document type (used by tests). */
+export async function seedConfiguration(ctx: Ctx, options: { templates?: Record<string, TemplateDefinition> } = {}): Promise<Record<string, string>> {
   const tenantIds: Record<string, string> = {};
   for (const t of TENANTS) {
     const existing = await withSystem(ctx.db, async (tx) => (await tx.query('SELECT id FROM tenants WHERE slug = $1', [t.slug])).rows[0]);
@@ -49,7 +55,7 @@ export async function seedConfiguration(ctx: Ctx): Promise<Record<string, string
     }
   });
 
-  for (const dt of DOC_TYPES) {
+  for (const dt of docTypes(options.templates)) {
     const tenantId = tenantIds[dt.tenant];
     const exists = await withSystem(ctx.db, async (tx) => (await tx.query('SELECT 1 FROM document_types WHERE tenant_id = $1 AND key = $2', [tenantId, dt.key])).rows[0]);
     if (exists) continue;
@@ -75,36 +81,39 @@ async function waitForProcessing(ctx: Ctx, tenantId: string, documentId: string,
 }
 
 /**
- * Sample documents. Requires a running worker for the revision step: the
- * invoice is reviewed (one correction) before its revision arrives, so the
- * revision demonstrates carry-over of 7 fields and re-review of 2.
+ * Seed version 1 of every fixture document (per the manifest) into Lakeside,
+ * and the invoice into Summit to show tenant separation. Later versions are
+ * left for people to upload. Then wait for the worker and report what was
+ * extracted, so a broken fixture or model shows up at startup.
  */
 export async function seedDocuments(ctx: Ctx, tenantIds: Record<string, string>, options: { waitMs?: number } = {}) {
-  const lakeside = tenantIds.lakeside;
   const already = await withSystem(ctx.db, async (tx) => (await tx.query('SELECT count(*)::int AS n FROM documents')).rows[0].n);
-  if (already > 0) return { skipped: true };
+  if (already > 0) return { skipped: true, documents: [] as unknown[] };
 
-  const reviewer = await withSystem(ctx.db, async (tx) => (await tx.query(`SELECT id, display_name FROM principals WHERE email = 'riley@lakeside.example'`)).rows[0]);
-  const riley: Actor = { principalId: reviewer.id, kind: 'user', displayName: reviewer.display_name };
-
-  const invoice = await submitDocument(ctx, riley, { tenantId: lakeside, documentTypeKey: 'invoice', filename: 'northwind-INV-2026-0147.pdf', title: 'Northwind invoice INV-2026-0147', bytes: await invoicePdf(INVOICE_V1) });
-  await submitDocument(ctx, riley, { tenantId: lakeside, documentTypeKey: 'lease', filename: 'market-st-lease-excerpt.pdf', title: '455 Market St lease excerpt', bytes: await leaseExcerptPdf() });
-  await submitDocument(ctx, riley, { tenantId: lakeside, documentTypeKey: 'market_report', filename: 'denver-office-q1-2026.pdf', title: 'Downtown Denver office Q1 2026', bytes: await marketReportPdf() });
-  // The same invoice arriving again electronically through the tenant URL is recognised, not duplicated.
-  await submitDocument(ctx, { ...riley, displayName: 'AP mailbox integration' }, { tenantId: lakeside, documentTypeKey: 'invoice', channel: 'api', filename: 'fwd-northwind.pdf', bytes: await invoicePdf(INVOICE_V1) });
-  // Summit's data is entirely separate.
-  await submitDocument(ctx, riley, { tenantId: tenantIds.summit, documentTypeKey: 'invoice', filename: 'summit-INV-2026-0901.pdf', title: 'Northwind invoice INV-2026-0901', bytes: await invoicePdf({ ...INVOICE_V1, number: 'INV-2026-0901' }) }).catch(() => undefined);
-
-  const processed = await waitForProcessing(ctx, lakeside, invoice.documentId, options.waitMs ?? 120_000);
-  if (processed.status === 'failed_operator') return { skipped: false, revision: false, reason: processed.failureReason };
-  for (const v of processed.values) {
-    if (!v.needsAttention) continue;
-    if (v.semanticKey === 'invoice.po_number') {
-      await reviewValue(ctx, riley, { tenantId: lakeside, valueId: v.id, action: 'correct', value: 'PO-88213-A', note: 'Purchase order in our system includes the -A suffix.' });
-    } else if (v.state !== 'gap' || !v.required) {
-      await reviewValue(ctx, riley, { tenantId: lakeside, valueId: v.id, action: 'approve' });
+  const submitter = await withSystem(ctx.db, async (tx) => (await tx.query(`SELECT id, display_name FROM principals WHERE email = 'pat@lakeside.example'`)).rows[0]);
+  const actor: Actor = { principalId: submitter.id, kind: 'user', displayName: submitter.display_name };
+  const seeded: Array<{ tenant: string; tenantId: string; id: string; title: string }> = [];
+  for (const doc of loadManifest()) {
+    const v1 = doc.versions.find((v) => v.version === 1)!;
+    const targets = doc.type === 'invoice' ? ['lakeside', 'summit'] : ['lakeside'];
+    for (const tenant of targets) {
+      const r = await submitDocument(ctx, actor, {
+        tenantId: tenantIds[tenant], documentTypeKey: doc.type, filename: v1.file.split('/').pop()!, title: doc.title, bytes: fixturePdf(v1.file), channel: 'api',
+      });
+      seeded.push({ tenant, tenantId: tenantIds[tenant], id: r.documentId, title: doc.title });
     }
   }
-  await addVersion(ctx, riley, { tenantId: lakeside, documentId: invoice.documentId, filename: 'northwind-INV-2026-0147-revised.pdf', bytes: await invoicePdf(INVOICE_V2) });
-  return { skipped: false, revision: true };
+
+  const report = [];
+  for (const d of seeded) {
+    const doc = await waitForProcessing(ctx, d.tenantId, d.id, options.waitMs ?? 180_000);
+    report.push({
+      tenant: d.tenant,
+      title: d.title,
+      status: doc.status,
+      failure: doc.failureReason,
+      values: doc.values.map((v) => ({ field: v.semanticKey, value: v.normalizedValue, gap: v.gapReason })),
+    });
+  }
+  return { skipped: false, documents: report };
 }

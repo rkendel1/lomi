@@ -1,7 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { ProviderNotReadyError, type ExtractionProvider, type SemanticValidator } from '@lomi/docops';
 import { AnthropicExtractionProvider, AnthropicSemanticValidator } from './anthropic';
-import { LayaSemanticValidator, nativeLaya, type LayaNative } from './laya';
+import { LayaSemanticValidator, LayaSession, nativeLaya, type LayaNative } from './laya';
+import { LayaExtractionProvider } from './layaExtraction';
 
 /**
  * Model providers by role. The deployment *registers* what it can run; a
@@ -18,8 +19,9 @@ import { LayaSemanticValidator, nativeLaya, type LayaNative } from './laya';
  *    itself permitted under rule 2. Otherwise processing stops with a
  *    readiness error for an operator — it is never silently rerouted.
  *
- * Roles: extraction `anthropic | none` (Laya never extracts);
- * semantic `laya | anthropic | none`. `none` means no model for that role:
+ * Roles: extraction `laya | anthropic | none`; semantic `laya | anthropic | none`.
+ * Laya extracts by choosing among verbatim passages/candidates (it never writes
+ * text); Anthropic extracts generatively. Either way evidence is verified after. `none` means no model for that role:
  * pattern extraction only / semantic checks recorded as skipped.
  *
  * Economics: Laya runs locally with no per-call cost for high-volume bounded
@@ -51,7 +53,12 @@ export function buildProviders(env: ProviderEnv): ProviderRegistry {
     extraction.anthropic = new AnthropicExtractionProvider(client, env.extractionModel);
     semantic.anthropic = new AnthropicSemanticValidator(client, env.semanticModel);
   }
-  if (env.layaEnabled) semantic.laya = new LayaSemanticValidator(env.layaNative ?? nativeLaya(), { modelRoot: env.layaModelRoot });
+  if (env.layaEnabled) {
+    // One loaded model serves both roles.
+    const session = new LayaSession(env.layaNative ?? nativeLaya(), { modelRoot: env.layaModelRoot });
+    extraction.laya = new LayaExtractionProvider(session);
+    semantic.laya = new LayaSemanticValidator(session);
+  }
 
   const localDefault = (name: string | undefined, available: Record<string, { external: boolean }>, role: string) => {
     if (!name || name === 'none') return 'none';

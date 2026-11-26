@@ -16,6 +16,8 @@ export interface DocumentSummary {
   progress: null | { total: number; pending: number; gaps: number; approved: number; autoApproved: number; corrected: number; carriedOver: number; failedChecks: number };
   relatedDocuments: number;
   warning: string | null;
+  extractionStatus: 'queued' | 'extracting' | 'extracted' | 'failed' | 'superseded';
+  receipts: { total: number; revisions: number; identicalResends: number; resendChannels: string[] };
 }
 
 const IN_FLIGHT = ['received', 'queued', 'parsing', 'extracting', 'validating', 'failed_retryable'];
@@ -136,6 +138,7 @@ export const DocumentsPage: React.FC<{ tenant: string; me: Me }> = ({ tenant, me
             <th>Type</th>
             <th>Version</th>
             <th>Received</th>
+            <th>Extraction</th>
             <th>Status</th>
             <th>Review progress</th>
             <th>Next action</th>
@@ -146,12 +149,19 @@ export const DocumentsPage: React.FC<{ tenant: string; me: Me }> = ({ tenant, me
             <tr key={d.id} onClick={() => (window.location.hash = `/documents/${d.id}`)} className={d.status === 'failed_operator' ? 'row-hold' : ''}>
               <td>
                 <a href={`#/documents/${d.id}`}>{d.title}</a>
-                {d.relatedDocuments > 0 && <span className="tag" title="Another document carries the same identifying values">possible duplicate</span>}
+                {d.receipts.revisions > 0 && <span className="tag tag-info" title="A revised version arrived; unchanged reviews were carried over">revised · v{d.currentVersion.number}</span>}
+                {d.receipts.identicalResends > 0 && (
+                  <span className="tag tag-muted" title={`The identical file arrived again (${d.receipts.resendChannels.join(', ')}); it was recorded, not reprocessed`}>
+                    re-sent ×{d.receipts.identicalResends}
+                  </span>
+                )}
+                {d.relatedDocuments > 0 && <span className="tag" title="Another document carries the same identifying values (e.g. vendor and invoice number). Not merged.">possible duplicate</span>}
                 {d.warning && <span className="tag tag-bad" title={d.warning}>check document type</span>}
               </td>
               <td>{d.documentType.name}</td>
               <td>v{d.currentVersion.number}</td>
               <td>{new Date(d.submittedAt).toLocaleString()}</td>
+              <td><span className={`xs xs-${d.extractionStatus}`}>{d.extractionStatus}</span></td>
               <td><StatusBadge status={d.status} label={d.statusLabel} /></td>
               <td>{d.progress ? <ProgressBar progress={d.progress} /> : <span className="muted">—</span>}</td>
               <td className={['awaiting_review', 'partially_reviewed', 'approved'].includes(d.status) ? 'next-action strong' : 'next-action'}>{d.nextAction}</td>
@@ -159,7 +169,7 @@ export const DocumentsPage: React.FC<{ tenant: string; me: Me }> = ({ tenant, me
           ))}
           {items.length === 0 && (
             <tr>
-              <td colSpan={7} className="empty">No documents match.</td>
+              <td colSpan={8} className="empty">No documents match.</td>
             </tr>
           )}
         </tbody>
