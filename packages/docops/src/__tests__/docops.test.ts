@@ -196,6 +196,7 @@ describe('validation', () => {
         return {
           results: checks.map((c) => ({ semanticKey: c.semanticKey, outcome: 'uncertain' as const, explanation: 'Ambiguous.', confidence: 0.4 })),
           call: { purpose: 'semantic_validation', provider: 'mock', model: 'cheap-model', promptVersion: 'sem-1', prompt: 'P', rawResponse: 'R' },
+          confidenceSource: 'model_probability' as const,
         };
       },
     };
@@ -205,7 +206,7 @@ describe('validation', () => {
       model: 'cheap-model',
       promptVersion: 'sem-1',
       confidence: 0.4,
-      confidenceSource: 'model_self_reported',
+      confidenceSource: 'model_probability',
       explanation: 'Uncertain: Ambiguous.',
     });
     expect(checked.modelCalls).toHaveLength(1);

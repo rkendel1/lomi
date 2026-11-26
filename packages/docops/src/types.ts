@@ -81,7 +81,12 @@ export interface VerifiedEvidence {
   box?: EvidenceBox;
 }
 
-export type ConfidenceSource = 'deterministic_match' | 'model_self_reported' | 'none';
+/**
+ * Where a confidence number came from. None of these is treated as a calibrated
+ * probability: `model_probability` is a decision model's output distribution,
+ * `model_self_reported` is a generative model's own estimate.
+ */
+export type ConfidenceSource = 'deterministic_match' | 'model_self_reported' | 'model_probability' | 'none';
 
 /** What an extraction provider proposed for one field, before verification. */
 export interface ProposedValue {
@@ -176,13 +181,13 @@ export interface SemanticCheckResult {
   confidence: number | null;
 }
 
-/** LLM-backed semantic checks, batched per document. */
+/** Model-backed semantic checks (generative LLM or decision model), batched per document. */
 export interface SemanticValidator {
   readonly name: string;
   check(
     document: ParsedDocument,
     checks: SemanticCheckRequest[]
-  ): Promise<{ results: SemanticCheckResult[]; call: ModelCallRecord }>;
+  ): Promise<{ results: SemanticCheckResult[]; call: ModelCallRecord; confidenceSource: ConfidenceSource }>;
 }
 
 export type Disposition = 'gap' | 'needs_review' | 'auto_approved';

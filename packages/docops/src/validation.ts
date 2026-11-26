@@ -169,7 +169,7 @@ export async function runSemanticValidation(
       calls: [],
     };
   }
-  const { results, call } = await validator.check(document, requests);
+  const { results, call, confidenceSource } = await validator.check(document, requests);
   return {
     calls: [call],
     results: requests.map((r) => {
@@ -186,7 +186,7 @@ export async function runSemanticValidation(
           ? `${found.outcome === 'uncertain' ? 'Uncertain: ' : ''}${found.explanation}`
           : 'The model returned no result for this check.',
         confidence: found?.confidence ?? null,
-        confidenceSource: 'model_self_reported' as const,
+        confidenceSource,
       };
     }),
   };
