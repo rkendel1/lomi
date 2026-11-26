@@ -25,6 +25,7 @@
     "@lomi/pdf": "workspace:*",
     "@rust-ml-runtime/node": "0.3.0",
     "bullmq": "^6.7.10",
+    "ioredis": "^6.1.0",
     "pg": "^8.23.1"
   },
   "devDependencies": {

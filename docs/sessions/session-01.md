@@ -134,3 +134,40 @@ model.
 Known risks: Laya's choice/score answers were low-confidence in the one real
 probe; its usefulness per check must be measured against reviewer outcomes.
 The Anthropic adapter has not been exercised against the live API.
+
+## 5. Durable processing (continued in the same session)
+
+Built: job leasing (`jobs/lifecycle.ts`), outbox dispatcher, PostgreSQL-only
+reconciler, BullMQ worker process, `process_version` and `generate_output`
+handlers, template/tenant/review services, deterministic fixture PDFs, and an
+integration harness that runs as `lomi_app` against a real test database.
+
+Failure classification as implemented:
+- Missing model / unauthorized external provider / no published template /
+  unreadable PDF → permanent: job `failed`, version `failed_operator` with an
+  operator action, no automatic retry.
+- Anything else (e.g. an inference timeout) → transient: `retry_wait` with
+  exponential backoff via a new, delayed outbox event.
+
+Tests run against real PostgreSQL 16 and Redis 7:
+- Workflow (5): durable acceptance before processing; evidence and validation
+  persisted; review and correction history; revised invoice reopens exactly
+  `invoice.due_date` and `invoice.po_number` and carries the other 7; previous
+  values/evidence visible; agents and old versions refused; reproducible,
+  idempotent generation; missing model → no retry, no model call, operator
+  action shown; transient failure → delayed retry → success.
+- Durability (6): end to end through Redis; Redis FLUSHDB (isolated db 15)
+  then recovery from PostgreSQL with review decisions intact; simulated worker
+  crash after claim (attempt 1 `abandoned`, attempt 2 `succeeded`, one set of
+  results); three concurrent duplicate deliveries → one success; uploads while
+  Redis is unavailable; exhausted leases fail visibly.
+- Mutation check: removing the lease-expiry guard from the claim makes the
+  crash and duplicate-delivery tests fail; restored.
+
+Pipeline fix: Turbo's strict env mode hid `LAYA_TEST_MODEL_DIR`, so the
+real-model tests were silently skipped in `pnpm test` (24 passed, 2 skipped).
+Added `passThroughEnv` for the test task and disabled test caching (integration
+tests depend on live services). Result: api 26/26.
+
+Not yet built at this point: AppPort capabilities, REST endpoints, MCP, UI,
+Docker Compose changes, seed script.
