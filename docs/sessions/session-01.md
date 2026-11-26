@@ -171,3 +171,29 @@ tests depend on live services). Result: api 26/26.
 
 Not yet built at this point: AppPort capabilities, REST endpoints, MCP, UI,
 Docker Compose changes, seed script.
+
+## 6. AppPort capabilities, REST, MCP
+
+- 26 capabilities defined with `defineCapability`; one application serves the
+  REST adapters, AppPort's own HTTP binding (`/api/appport`, manifest,
+  `/.well-known/appport`) and the AppPort MCP adapter (`/api/mcp`).
+- Authorization: an `authenticated` authorizer, a `tenant-membership`
+  authorizer that answers NOT_FOUND for tenants the caller is not in, and
+  `permissionAuthorizer({ resolvePermissions })` computing permissions from the
+  caller's role in the tenant named in the input.
+- Findings from probing AppPort before relying on it: (1) output validation is
+  strict — undeclared output properties fail the call; (2) a `resolvePermissions`
+  callback that grants permissions without checking for a principal lets an
+  anonymous call through, so resolvers return nothing without a principal and
+  an explicit `authenticated` authorizer runs first; (3) capability names must
+  match `^[a-z][a-z0-9]*(\.[a-z][a-z0-9]*)+$` — camelCase names failed at
+  startup and were renamed (e.g. `documents.versions.add`).
+- Agents: effective permissions = delegated scopes ∩ agent-grantable set ∩
+  delegator's permissions. `reviews.decide` is never agent-grantable; the seed
+  agent is delegated it deliberately and the test confirms it is refused.
+  Every agent invocation is audited with capability, delegator and outcome.
+- API tests (6) through a real HTTP server: 202 after durable acceptance;
+  duplicate upload recognised; cross-tenant access → 404 (both by naming the
+  other tenant and by id under one's own tenant); Lomi-only operations refused
+  for customers; agent can read and propose but not decide; manifest and MCP
+  `tools/list`/`tools/call` work; anonymous MCP calls are refused.

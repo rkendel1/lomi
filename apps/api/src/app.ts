@@ -6,6 +6,7 @@ import type {
   TransformEntry,
 } from '@lomi/core';
 import { renderPdf } from '@lomi/pdf';
+import { HttpError as RestHttpError } from './http/rest';
 
 const MAX_BODY_BYTES = 20 * 1024 * 1024;
 
@@ -125,10 +126,13 @@ async function handleRender(req: IncomingMessage, res: ServerResponse): Promise<
 function withCors(res: ServerResponse): void {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Lomi-Tenant, Idempotency-Key');
 }
 
-export function createApiServer() {
+/** Extra routes mounted ahead of the 404 (document operations). Returns true when handled. */
+export type RouteHandler = (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
+
+export function createApiServer(routes?: RouteHandler) {
   return createServer(async (req, res) => {
     withCors(res);
 
@@ -155,7 +159,12 @@ export function createApiServer() {
       if (route === 'GET /api') {
         sendJson(res, 200, {
           name: 'lomi-api',
-          endpoints: ['GET /api/health', 'POST /api/render'],
+          endpoints: [
+            'GET /api/health', 'POST /api/render',
+            ...(routes ? ['POST /api/documents', 'GET /api/documents', 'POST /api/documents/:id/versions', 'GET /api/documents/:id',
+              'GET /api/documents/:id/progress', 'POST /api/values/:id/review', 'POST /api/documents/:id/generate', 'GET /api/documents/:id/file',
+              'POST /api/appport', 'GET /api/appport/manifest', 'POST /api/mcp'] : []),
+          ],
         });
         return;
       }
@@ -165,12 +174,14 @@ export function createApiServer() {
         return;
       }
 
+      if (routes && (await routes(req, res, url))) return;
+
       sendJson(res, 404, { error: 'Not found' });
     } catch (error) {
-      const status = error instanceof HttpError ? error.status : 500;
+      const status = error instanceof HttpError || error instanceof RestHttpError ? error.status : 500;
       const message = error instanceof Error ? error.message : 'Unknown error';
       if (status >= 500) console.error('API error:', error);
-      if (!res.headersSent) sendJson(res, status, { error: message });
+      if (!res.headersSent) sendJson(res, status, error instanceof RestHttpError && error.body ? error.body : { error: message });
       else res.end();
     }
   });
