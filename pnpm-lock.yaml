@@ -140,6 +140,31 @@ importers:
         specifier: ^3.2.4
         version: 3.2.7(@types/node@22.20.7)(jiti@1.21.7)(jsdom@25.0.1)(terser@5.51.4)
 
+  packages/docops:
+    dependencies:
+      '@lomi/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@lomi/config':
+        specifier: workspace:*
+        version: link:../config
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.7
+      eslint:
+        specifier: ^9.17.0
+        version: 9.39.5(jiti@1.21.7)
+      tsup:
+        specifier: ^8.3.5
+        version: 8.5.1(jiti@1.21.7)(postcss@8.5.33)(typescript@5.9.3)
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/node@22.20.7)(jiti@1.21.7)(jsdom@25.0.1)(terser@5.51.4)
+
   packages/pdf:
     dependencies:
       '@lomi/core':
@@ -148,6 +173,9 @@ importers:
       pdf-lib:
         specifier: ^1.17.1
         version: 1.17.1
+      pdfjs-dist:
+        specifier: ^5.7.284
+        version: 5.7.284
     devDependencies:
       '@lomi/config':
         specifier: workspace:*

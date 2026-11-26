@@ -27,7 +27,16 @@ export interface RenderOptions {
   pageOffsets?: Record<number, PageOffset>; // Phase 2, Item 7: Page calibration
   maxLines?: Record<string, number>; // Phase 2, Item 3: Multiline overflow
   overflowStrategy?: 'truncate' | 'shrink' | 'continue'; // Phase 2, Item 3
+  /**
+   * Keep the template's document metadata (no new ModDate/Producer stamps) so
+   * identical inputs always produce byte-identical output. Generated documents
+   * rely on this to be reproducible for audit.
+   */
+  deterministic?: boolean;
 }
+
+/** Identifies renderer behaviour for provenance; bump when output for the same inputs changes. */
+export const RENDERER_VERSION = 'lomi-pdf-renderer/1';
 
 function toSemanticTransformKey(fieldName: string): string {
   return fieldName
@@ -334,11 +343,15 @@ export async function renderPdf(options: RenderOptions): Promise<Uint8Array> {
     pageOffsets = {},
     maxLines = {},
     overflowStrategy = 'truncate',
+    deterministic = false,
   } = options;
   
   // Load the PDF template
   // Support encrypted PDFs by ignoring encryption
-  const pdfDoc = await PDFDocument.load(pdfTemplate, { ignoreEncryption: true });
+  const pdfDoc = await PDFDocument.load(pdfTemplate, {
+    ignoreEncryption: true,
+    updateMetadata: !deterministic,
+  });
   const pages = pdfDoc.getPages();
   
   // Render regular fields

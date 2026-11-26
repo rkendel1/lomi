@@ -100,6 +100,38 @@ export interface Field {
   boxedTextEnabled?: boolean;
   boxInputMode?: BoxInputMode;
   boxPattern?: string;
+  /** Document operations: how a value for this field is extracted from incoming documents. */
+  extraction?: FieldExtractionConfig;
+  /** Document operations: deterministic and semantic checks applied to extracted values. */
+  validationRules?: FieldValidationRule[];
+  /** Document operations: when a human must review an extracted value. */
+  reviewPolicy?: FieldReviewPolicy;
+}
+
+/**
+ * `pattern` extraction is deterministic: a regular expression whose first capture
+ * group is the value and whose whole match is the supporting quote.
+ * `llm` extraction asks the configured model, guided by `instructions`.
+ */
+export type ExtractionMethod = 'pattern' | 'llm';
+
+export interface FieldExtractionConfig {
+  method: ExtractionMethod;
+  pattern?: string;
+  flags?: string;
+  instructions?: string;
+}
+
+export type FieldValidationRule =
+  | { kind: 'regex'; pattern: string; message?: string }
+  | { kind: 'range'; min?: number; max?: number; message?: string }
+  | { kind: 'enum'; values: string[]; message?: string }
+  | { kind: 'semantic'; prompt: string };
+
+export interface FieldReviewPolicy {
+  /** `always`: a human reviews every value. `threshold`: values that pass every check at or above the threshold are approved by policy. */
+  mode: 'always' | 'threshold';
+  confidenceThreshold?: number;
 }
 
 export interface TableColumn {
