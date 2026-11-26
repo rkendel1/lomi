@@ -9,6 +9,7 @@ import {
   parseAmount,
   parseDate,
   processDocument,
+  ProviderNotReadyError,
   runExtraction,
   verifyQuote,
   type ExtractionProvider,
@@ -76,6 +77,8 @@ const template: TemplateDefinition = {
 function mockProvider(proposals: Array<{ semanticKey: string; value: string | null; quote: string | null; page: number | null; confidence?: number }>): ExtractionProvider {
   return {
     name: 'mock',
+    external: false,
+    readiness: async () => ({ ready: true, detail: 'ok' }),
     async extract() {
       return { proposals, model: 'mock-model', promptVersion: 'p1', prompt: 'PROMPT', rawResponse: JSON.stringify(proposals) };
     },
@@ -143,8 +146,16 @@ describe('extraction', () => {
   });
 
   it('propagates provider failures so the job can be retried', async () => {
-    const failing: ExtractionProvider = { name: 'down', extract: async () => { throw new Error('503'); } };
+    const failing: ExtractionProvider = { name: 'down', external: false, readiness: async () => ({ ready: true, detail: '' }), extract: async () => { throw new Error('503'); } };
     await expect(runExtraction(invoiceText, template, failing)).rejects.toThrow(/down.*503/);
+  });
+
+  it('propagates readiness failures unwrapped so they are not retried as transient', async () => {
+    const notReady: ExtractionProvider = {
+      name: 'local', external: false, readiness: async () => ({ ready: false, detail: 'missing' }),
+      extract: async () => { throw new ProviderNotReadyError('local', 'extraction', 'model missing', 'install it'); },
+    };
+    await expect(runExtraction(invoiceText, template, notReady)).rejects.toBeInstanceOf(ProviderNotReadyError);
   });
 });
 
@@ -190,9 +201,13 @@ describe('validation', () => {
     const skipped = await processDocument(d, t, { extractionProvider: null, semanticValidator: null });
     expect(skipped.fields[0].validations.find((v) => v.method === 'semantic')).toMatchObject({ outcome: 'skipped' });
 
+    const seen: unknown[] = [];
     const validator: SemanticValidator = {
       name: 'mock',
+      external: false,
+      readiness: async () => ({ ready: true, detail: 'ok' }),
       async check(_doc, checks) {
+        seen.push(...checks);
         return {
           results: checks.map((c) => ({ semanticKey: c.semanticKey, outcome: 'uncertain' as const, explanation: 'Ambiguous.', confidence: 0.4 })),
           call: { purpose: 'semantic_validation', provider: 'mock', model: 'cheap-model', promptVersion: 'sem-1', prompt: 'P', rawResponse: 'R' },
@@ -202,13 +217,15 @@ describe('validation', () => {
     };
     const checked = await processDocument(d, t, { extractionProvider: null, semanticValidator: validator });
     expect(checked.fields[0].validations.find((v) => v.method === 'semantic')).toMatchObject({
-      outcome: 'fail',
+      outcome: 'uncertain',
       model: 'cheap-model',
       promptVersion: 'sem-1',
       confidence: 0.4,
       confidenceSource: 'model_probability',
-      explanation: 'Uncertain: Ambiguous.',
+      explanation: 'Ambiguous.',
     });
+    expect(seen[0]).toMatchObject({ decision: { type: 'yes_no' }, minConfidence: 0.6, quote: 'Market: Austin, TX.' });
+    expect(checked.fields[0].disposition).toBe('needs_review');
     expect(checked.modelCalls).toHaveLength(1);
   });
 

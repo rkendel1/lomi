@@ -219,6 +219,8 @@ CREATE TABLE document_versions (
   baseline_version_id uuid REFERENCES document_versions(id),
   parsed_text jsonb,
   parser text,
+  -- Which model providers were selected for this version and why (including any configured fallback).
+  model_selection jsonb,
   page_count integer,
   created_at timestamptz NOT NULL DEFAULT now(),
   status_changed_at timestamptz NOT NULL DEFAULT now(),
@@ -361,7 +363,7 @@ CREATE TABLE validation_results (
   rule_id text NOT NULL,
   method text NOT NULL CHECK (method IN ('deterministic', 'semantic')),
   rule_version text NOT NULL,
-  outcome text NOT NULL CHECK (outcome IN ('pass', 'fail', 'skipped', 'error')),
+  outcome text NOT NULL CHECK (outcome IN ('pass', 'fail', 'uncertain', 'skipped', 'error')),
   explanation text NOT NULL,
   model text,
   prompt_version text,
@@ -441,6 +443,18 @@ CREATE TABLE generated_documents (
   created_at timestamptz NOT NULL DEFAULT now(),
   completed_at timestamptz,
   UNIQUE (document_version_id, snapshot_hash, renderer_version)
+);
+
+-- Workers report provider readiness here so the API can show it without loading models itself.
+CREATE TABLE provider_readiness (
+  worker_id text NOT NULL,
+  role text NOT NULL,
+  provider text NOT NULL,
+  ready boolean NOT NULL,
+  detail text NOT NULL,
+  model text,
+  checked_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (worker_id, role, provider)
 );
 
 -- ── Provenance ──────────────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-import type { Field } from '@lomi/core';
+import type { Field, SemanticDecision } from '@lomi/core';
 
 export interface PageOffset {
   x: number;
@@ -115,8 +115,33 @@ export interface ExtractionProviderResult {
  * whether their evidence is trustworthy: verification happens afterwards,
  * against the parsed document, in `runExtraction`.
  */
+export interface ProviderReadiness {
+  ready: boolean;
+  detail: string;
+  model?: string;
+}
+
+/**
+ * A provider is not ready to serve (model not installed, no credentials,
+ * not authorized for this tenant). This is a configuration problem for an
+ * operator to fix, not a transient failure to retry.
+ */
+export class ProviderNotReadyError extends Error {
+  constructor(
+    readonly provider: string,
+    readonly role: 'extraction' | 'semantic',
+    readonly reason: string,
+    readonly action: string
+  ) {
+    super(`${role} provider "${provider}" is not ready: ${reason}`);
+  }
+}
+
 export interface ExtractionProvider {
   readonly name: string;
+  /** Data leaves Lomi's infrastructure when this provider is used. */
+  readonly external: boolean;
+  readiness(): Promise<ProviderReadiness>;
   extract(request: ExtractionProviderRequest): Promise<ExtractionProviderResult>;
 }
 
@@ -152,7 +177,8 @@ export interface ExtractionOutcome {
   modelCalls: ModelCallRecord[];
 }
 
-export type ValidationOutcomeKind = 'pass' | 'fail' | 'skipped' | 'error';
+/** `uncertain`: a model answered below its confidence floor; a human decides. */
+export type ValidationOutcomeKind = 'pass' | 'fail' | 'uncertain' | 'skipped' | 'error';
 
 export interface FieldValidationResult {
   semanticKey: string;
@@ -172,6 +198,8 @@ export interface SemanticCheckRequest {
   value: string;
   quote: string;
   prompt: string;
+  decision: SemanticDecision;
+  minConfidence: number;
 }
 
 export interface SemanticCheckResult {
@@ -179,11 +207,15 @@ export interface SemanticCheckResult {
   outcome: 'pass' | 'fail' | 'uncertain';
   explanation: string;
   confidence: number | null;
+  /** The answer as given (e.g. "yes", a choice label, a score level). */
+  answer?: string;
 }
 
 /** Model-backed semantic checks (generative LLM or decision model), batched per document. */
 export interface SemanticValidator {
   readonly name: string;
+  readonly external: boolean;
+  readiness(): Promise<ProviderReadiness>;
   check(
     document: ParsedDocument,
     checks: SemanticCheckRequest[]

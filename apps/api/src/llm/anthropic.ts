@@ -6,6 +6,7 @@ import {
   type ExtractionProviderResult,
   type ParsedDocument,
   type SemanticCheckRequest,
+  type SemanticCheckResult,
   type SemanticValidator,
 } from '@lomi/docops';
 
@@ -45,9 +46,10 @@ const SEMANTIC_SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['semanticKey', 'outcome', 'explanation', 'confidence'],
+        required: ['semanticKey', 'answer', 'outcome', 'explanation', 'confidence'],
         properties: {
           semanticKey: { type: 'string' },
+          answer: { type: 'string' },
           outcome: { type: 'string', enum: ['pass', 'fail', 'uncertain'] },
           explanation: { type: 'string' },
           confidence: { type: 'number' },
@@ -76,10 +78,16 @@ async function structuredCall(client: Anthropic, model: string, system: string, 
 /** Structured field extraction with Claude. Evidence it returns is verified afterwards; it is never trusted as-is. */
 export class AnthropicExtractionProvider implements ExtractionProvider {
   readonly name = 'anthropic';
+  /** Document text is sent to Anthropic's API. Only used for tenants that authorized external processing. */
+  readonly external = true;
   constructor(
     private readonly client: Anthropic,
     private readonly model: string
   ) {}
+
+  async readiness() {
+    return { ready: true, detail: 'API key configured', model: this.model };
+  }
 
   async extract({ document, fields }: ExtractionProviderRequest): Promise<ExtractionProviderResult> {
     const system =
@@ -99,21 +107,39 @@ export class AnthropicExtractionProvider implements ExtractionProvider {
 /** Semantic checks with a generative model; confidence is the model's own estimate. */
 export class AnthropicSemanticValidator implements SemanticValidator {
   readonly name = 'anthropic';
+  readonly external = true;
   constructor(
     private readonly client: Anthropic,
     private readonly model: string
   ) {}
 
+  async readiness() {
+    return { ready: true, detail: 'API key configured', model: this.model };
+  }
+
   async check(_document: ParsedDocument, checks: SemanticCheckRequest[]) {
     const system =
       'You review extracted document values. For each check, answer pass, fail or uncertain using only the quoted evidence, ' +
       'with a one-sentence explanation. Use uncertain when the evidence does not settle the question.';
+    const shape = (c: SemanticCheckRequest) =>
+      c.decision.type === 'choice'
+        ? `choose one of [${c.decision.options.join(', ')}]; pass if the answer is one of [${c.decision.accept.join(', ')}]`
+        : c.decision.type === 'score'
+          ? `score on levels ${c.decision.levels.map((l, i) => `${i}=${l}`).join(', ')}; pass if level >= ${c.decision.minLevel}`
+          : 'answer yes or no; pass if yes';
     const user = checks
-      .map((c, i) => `${i + 1}. semanticKey: ${c.semanticKey}\n   question: ${c.prompt}\n   value: ${c.value}\n   evidence: "${c.quote}"`)
+      .map((c, i) => `${i + 1}. semanticKey: ${c.semanticKey}\n   question: ${c.prompt}\n   answer format: ${shape(c)}\n   value: ${c.value}\n   evidence: "${c.quote}"`)
       .join('\n');
     const { raw, parsed, servedBy } = await structuredCall(this.client, this.model, system, user, SEMANTIC_SCHEMA);
+    const raw_results = ((parsed as { results?: SemanticCheckResult[] }).results ?? []) as SemanticCheckResult[];
+    const floors = new Map(checks.map((c) => [c.semanticKey, c.minConfidence]));
+    const results = raw_results.map((r) =>
+      r.confidence !== null && r.confidence < (floors.get(r.semanticKey) ?? 0.6) && r.outcome !== 'uncertain'
+        ? { ...r, outcome: 'uncertain' as const, explanation: `${r.explanation} (self-reported confidence ${r.confidence} below floor)` }
+        : r
+    );
     return {
-      results: ((parsed as { results?: unknown[] }).results ?? []) as Awaited<ReturnType<SemanticValidator['check']>>['results'],
+      results,
       call: { purpose: 'semantic_validation' as const, provider: this.name, model: servedBy, promptVersion: SEMANTIC_PROMPT_VERSION, prompt: `${system}\n\n${user}`, rawResponse: raw },
       confidenceSource: 'model_self_reported' as const,
     };

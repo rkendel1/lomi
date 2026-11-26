@@ -126,7 +126,25 @@ export type FieldValidationRule =
   | { kind: 'regex'; pattern: string; message?: string }
   | { kind: 'range'; min?: number; max?: number; message?: string }
   | { kind: 'enum'; values: string[]; message?: string }
-  | { kind: 'semantic'; prompt: string };
+  | {
+      kind: 'semantic';
+      /** The bounded question asked about an already-extracted, evidence-verified value. */
+      prompt: string;
+      /** Answer shape. Defaults to yes/no, where "yes" passes. */
+      decision?: SemanticDecision;
+      /** Below this model confidence the result is `uncertain` and goes to a reviewer. Default 0.6. */
+      minConfidence?: number;
+    };
+
+/**
+ * Typed decisions a semantic check can ask for. They map onto Laya's decision
+ * heads (noul / choice / score); generative providers answer the same shapes.
+ */
+export type SemanticDecision =
+  | { type: 'yes_no' }
+  | { type: 'choice'; options: string[]; accept: string[] }
+  /** `levels` are described lowest→highest; passes when the answer's level index ≥ `minLevel`. */
+  | { type: 'score'; levels: string[]; minLevel: number };
 
 export interface FieldReviewPolicy {
   /** `always`: a human reviews every value. `threshold`: values that pass every check at or above the threshold are approved by policy. */

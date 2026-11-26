@@ -139,7 +139,14 @@ export function semanticCheckRequests(template: TemplateDefinition, values: Map<
     if (!extraction || extraction.value === null || !extraction.evidence) continue;
     for (const rule of field.validationRules ?? []) {
       if (rule.kind === 'semantic') {
-        requests.push({ semanticKey: field.semanticKey, value: extraction.value, quote: extraction.evidence.quote, prompt: rule.prompt });
+        requests.push({
+          semanticKey: field.semanticKey,
+          value: extraction.value,
+          quote: extraction.evidence.quote,
+          prompt: rule.prompt,
+          decision: rule.decision ?? { type: 'yes_no' },
+          minConfidence: rule.minConfidence ?? 0.6,
+        });
       }
     }
   }
@@ -181,10 +188,8 @@ export async function runSemanticValidation(
         ruleVersion: call.promptVersion,
         model: call.model,
         promptVersion: call.promptVersion,
-        outcome: !found ? ('error' as const) : found.outcome === 'pass' ? ('pass' as const) : ('fail' as const),
-        explanation: found
-          ? `${found.outcome === 'uncertain' ? 'Uncertain: ' : ''}${found.explanation}`
-          : 'The model returned no result for this check.',
+        outcome: found ? found.outcome : ('error' as const),
+        explanation: found ? found.explanation : 'The model returned no result for this check.',
         confidence: found?.confidence ?? null,
         confidenceSource,
       };

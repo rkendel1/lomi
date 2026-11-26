@@ -10,6 +10,7 @@ import type {
   ProposedValue,
   TemplateDefinition,
 } from './types';
+import { ProviderNotReadyError } from './types';
 
 /** Fields that carry business data (signatures/initials are render-only). */
 export function extractableFields(template: TemplateDefinition): Field[] {
@@ -150,6 +151,7 @@ export async function runExtraction(
           );
         }
       } catch (error) {
+        if (error instanceof ProviderNotReadyError) throw error;
         // Surface the failure to the caller: a model outage is a retryable processing
         // failure, not a set of gaps that a reviewer should fill in by hand.
         throw new ExtractionProviderError(provider.name, error);
