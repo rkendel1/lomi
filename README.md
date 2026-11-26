@@ -1,205 +1,198 @@
 # Lomi Document Operations
 
-Lomi runs document workflows for multiple customers. Documents arrive; Lomi
-extracts the fields each customer's template defines, proves where every value
-came from, checks it, puts exactly the decisions that need a person in front of
-a reviewer, keeps every decision, and produces output documents from approved
-data — with provenance for all of it.
+PDFs come in, a model extracts the fields each document type defines, every
+value is checked against the exact passage it came from, a person approves or
+corrects it, and a revised document only re-opens what actually changed.
 
-It is built on **coordtool**, the PDF field mapper this repository started as:
-its PDF.js viewer, visual mapper, field model, schema generators and pdf-lib
-renderer are reused, not replaced.
-
-- Architecture, data model, trade-offs and scaling: [docs/architecture.md](docs/architecture.md)
-- What existed before this work: [docs/architecture-inventory.md](docs/architecture-inventory.md)
-- Engineering session log: [docs/sessions/](docs/sessions/)
-- coordtool's original feature docs: [FEATURES.md](FEATURES.md), [IMPLEMENTATION.md](IMPLEMENTATION.md), [SUMMARY.md](SUMMARY.md)
+Built on the existing **coordtool** PDF mapper in this repo (viewer, field
+mapper, schema generators, renderer are reused). Deeper detail:
+[docs/architecture.md](docs/architecture.md) ·
+QA against the brief: [docs/qa-checklist.md](docs/qa-checklist.md) ·
+API: `http://localhost:4000/api/docs` (OpenAPI 3.1) ·
+Engineering logs: [docs/sessions/](docs/sessions/).
 
 ---
 
-## Run it
+## 1. Run it, and what to click first
 
-Prerequisites: Docker with Compose v2. First start needs network access (images,
-npm packages, and a one-time download of the local Laya model, ~1 min).
-
-```bash
-docker compose up --build
-```
-
-Open <http://localhost:3000> and choose a workspace — **Lomi Operations**,
-**Customer review** or **Document submission** — then a demo identity. The stack:
-
-| Service | Purpose |
-| --- | --- |
-| `web` (:3000) | UI (nginx), proxies `/api` |
-| `api` (:4000) | REST, AppPort HTTP binding, MCP. Never loads models. |
-| `worker` | outbox dispatch, processing, recovery; runs Laya in-process |
-| `postgres` | the only system of record |
-| `redis` | job delivery only — losing it loses nothing |
-| `migrate`, `models`, `seed` | one-shot: schema, Laya install, demo data |
-
-API, worker, migrate, models and seed run from one application image.
-
-Configuration: copy `.env.example` to `.env` to change defaults. The defaults
-are safe for local development. No credentials are needed; Anthropic is only
-used if you set `ANTHROPIC_API_KEY` **and** a tenant authorizes external
-processing.
-
-### Demo data
-
-Two customers (**Lakeside Property Management**, **Summit Realty Group**) with
-published templates for an invoice, a lease excerpt and a market report, and:
-
-- a Northwind invoice that was reviewed (one correction) and then **revised**:
-  version 2 changes the due date and PO number, so 2 fields are back for review
-  and 7 carried over;
-- the same invoice re-sent through the API ingress, recognised as a duplicate;
-- a lease excerpt and a market report ready for review;
-- a Summit invoice that Lakeside users cannot see.
-
-| Sign in as | Sees |
-| --- | --- |
-| Pat Payables (Lakeside submitter) | Lakeside's intake page: submit one or many PDFs and follow them; cannot review |
-| Riley Reviewer (Lakeside) | Lakeside review queue; review, correct, generate |
-| Avery Admin (Lakeside) | plus Lakeside operations and model-processing authorization |
-| Sam Reviewer (Summit) | Summit only |
-| Olivia Ops (Lomi operator) | all customers, Operations, Schema Studio |
-
-Demo identities exist only because `LOMI_DEV_LOGIN=1` in `docker-compose.yml`.
-Their tokens are well-known development values; never seed or enable them in
-production. An agent identity (`dev-lakeside-agent`, delegated by Riley) can be
-used against the API/MCP to see agent limits.
-
-### Customer intake URL
-
-Every customer has exactly one intake URL. People open
-`http://localhost:3000/in/lakeside` to upload; systems post to
-`/api/in/lakeside/documents`. The same endpoint accepts:
-
-| Submission | How |
-| --- | --- |
-| Electronic (API) | `application/pdf` body (`?documentType=invoice&filename=…`) or JSON `{filename, contentBase64}` |
-| Single upload | `multipart/form-data` with one `file` part |
-| Bulk upload | `multipart/form-data` with several `file` parts, or JSON `{documents: [...]}` (≤100); each file is accepted or rejected on its own |
+Docker with Compose v2. The first start needs network access (images, npm, and a
+one-time download of the local Laya model).
 
 ```bash
-curl -s -X POST -H 'Authorization: Bearer dev-lakeside-submitter' \
-  -F documentType=invoice -F file=@a.pdf -F file=@b.pdf http://localhost:4000/api/in/lakeside/documents
+docker compose up
 ```
 
-Processing starts immediately: the API publishes the committed job as soon as
-the submission is stored (the outbox and worker remain the guarantee if that
-fails). In the demo stack a bulk upload of three invoices is checked and
-waiting for review in under two seconds. The caller's token decides access: a
-Lakeside submitter posting to `/api/in/summit/…` gets `404`.
+Migrations run, version 1 of each fixture in `packages/core/src/__tests__/fixtures`
+is seeded and extracted (the `seed` container prints every extracted value), and
+the UI is at <http://localhost:3000>.
 
-### Reviewing
+**Click first: Lomi Operations → Olivia Ops** (the internal platform operator).
+You see every customer, processing health and failures, and **Schema Studio**,
+where document types and their fields are configured. Then sign out and try:
 
-**Start reviewing** opens the oldest document waiting for a decision. The left
-pane switches between **Original** (the PDF exactly as received, no overlays)
-and **Evidence** (where the selected field was found). **Approve all verified**
-approves every field whose evidence was verified and whose checks raised
-nothing; flagged and missing fields stay for individual decisions. When the
-last field is decided, the next document waiting for review opens immediately.
-
-### API reference
-
-OpenAPI 3.1: <http://localhost:4000/api/openapi.json>, rendered at
-<http://localhost:4000/api/docs> (or via the web proxy at `:3000/api/docs`).
-
-### Try the API
-
-```bash
-curl -s -H 'Authorization: Bearer dev-lakeside-reviewer' http://localhost:4000/api/documents
-```
-
-```bash
-curl -s -X POST -H 'Authorization: Bearer dev-lakeside-reviewer' -H 'Content-Type: application/pdf' \
-  --data-binary @invoice.pdf 'http://localhost:4000/api/documents?documentType=invoice&filename=invoice.pdf'
-```
-
-| Endpoint | |
-| --- | --- |
-| `POST /documents` | upload (`application/pdf` with `?documentType=&filename=`, or JSON with `contentBase64`); `202` after durable acceptance |
-| `POST /documents/:id/versions` | upload a revised version |
-| `GET /documents/:id` | current version, status, values, evidence, checks, decisions, history |
-| `POST /values/:id/review` | `{"action":"approve"}` or `{"action":"correct","value":"…","note":"…"}` |
-| `GET /documents/:id/progress` | status, next action, counts |
-| `GET /documents`, `POST /documents/:id/generate`, `GET /documents/:id/file` | list, generate output, download original/output |
-
-All paths also work under `/api/…`. Tenant: `X-Lomi-Tenant` header, or implied
-when the caller belongs to one tenant. Every endpoint is a thin adapter over an
-AppPort capability; the full set is in the manifest at
-`GET /api/appport/manifest` and is exposed to agents over MCP at `POST /api/mcp`.
-
-### Resilience checks against the running stack
-
-```bash
-scripts/resilience-check.sh
-```
-
-Kills the worker with SIGKILL mid-processing and verifies recovery (takes about
-two minutes, bounded by the job lease), then FLUSHALLs and restarts Redis and
-verifies nothing was lost. `node scripts/ui-smoke.cjs` and
-`node scripts/ui-workflows.cjs <shots-dir> <pdf-dir>` drive the UI in a headless
-browser (need Playwright): sign-in workspaces, bulk submission, review with
-auto-advance, operator customer selection, Schema Studio, API reference.
-
----
-
-## Develop and test
-
-Requirements: Node 22, pnpm 10 (`corepack enable`), PostgreSQL 16 and Redis 7
-for the integration tests.
-
-```bash
-pnpm install
-```
-
-```bash
-docker run -d --name lomi-pg -e POSTGRES_USER=lomi -e POSTGRES_PASSWORD=lomi -e POSTGRES_DB=lomi_test -p 5432:5432 postgres:16-alpine
-```
-
-```bash
-docker run -d --name lomi-redis -p 6379:6379 redis:7-alpine
-```
-
-```bash
-pnpm build && pnpm lint && pnpm typecheck && pnpm test
-```
-
-`pnpm test` runs everything through Turborepo. Integration tests use
-`TEST_DATABASE_URL` (default `postgres://lomi:lomi@localhost:5432/lomi_test`)
-and `TEST_REDIS_URL` (default `redis://localhost:6379/15`; the durability
-tests wipe that Redis database). Tests that need the real Laya model run only
-when `LAYA_TEST_MODEL_DIR` points at an installed model
-(`ml-runtime model install laya`); otherwise they are skipped and reported as
-skipped. No test calls a paid model API.
-
-| Package | Tests | Covers |
+| Workspace | Identity | Try |
 | --- | --- | --- |
-| `packages/core` | 58 | coordtool field model and schema generation |
-| `packages/pdf` | 49 | rendering, formatters, text extraction, deterministic output |
-| `packages/docops` | 19 | evidence verification, extraction, validation, disposition, carry-over |
-| `apps/api` | 41 | providers (incl. real Laya), workflow, durability with real Redis, REST/AppPort/MCP and tenant isolation, intake URL (single/bulk/JSON, immediate processing), review-all and next, OpenAPI routes, end-to-end |
-| `apps/web` | 4 | mapper standalone/embedded, sign-in workspaces |
+| Customer review | Riley Reviewer (Lakeside) | **Start reviewing** → each value beside its quote; Original vs Evidence; *Approve all verified*; the next document opens by itself |
+| Document submission | Pat Payables (Lakeside) | the customer's intake URL `/in/lakeside`: single or bulk upload, live status |
+| Customer review | Sam Reviewer (Summit) | a second customer — sees none of Lakeside's data |
 
-Run the API and worker outside Docker after `pnpm build`:
-`node apps/api/dist/index.js` and `node apps/api/dist/worker.js` (see
-`.env.example` for variables). `pnpm dev` starts the web dev server and API watcher.
+**Re-extraction**: approve the Meridian invoice, then upload
+`packages/core/src/__tests__/fixtures/documents/invoice-001.v2.pdf` as a new
+version (or run `scripts/brief-check.sh`). Exactly two values come back:
+due date and total; the other three are *carried over*.
 
-## Troubleshooting
+```bash
+curl -F type=invoice -F file=@invoice.pdf http://localhost:4000/documents
+```
 
-| Symptom | Cause / fix |
-| --- | --- |
-| Documents "On hold — Lomi is resolving an issue" with *semantic provider "laya" is not ready* | The Laya model is not installed on the worker. `docker compose run --rm models`, then retry from Operations. Or set the tenant's semantic provider to `none`. |
-| `models` service fails | It downloads the model on first run; check network access. Set `LOMI_LAYA=0` to run without it. |
-| Worker logs `NativeLoadError` | The worker must run on glibc Linux (the image does). Alpine/musl is not supported by the native runtime. |
-| Upload returns 404 for a tenant | You are not a member of that tenant (Lomi does not reveal whether it exists). |
-| A recovered job took ~2 minutes | Crash recovery waits for the job lease (`JOB_LEASE_SECONDS`, default 120). |
-| Port 3000/4000 in use | Change the published ports in `docker-compose.yml`. |
-| Start from scratch | `docker compose down -v` deletes all data, objects and the model volume. |
+Token-less calls like this work only because `LOMI_DEV_DEFAULT_TOKEN` is set in
+`docker-compose.yml` for development; real callers send `Authorization: Bearer`.
 
-## License
+Tests: `pnpm install && pnpm test` (needs PostgreSQL and Redis; see
+`.env.example`). Live-stack checks: `scripts/brief-check.sh` (revision, version
+during extraction, restart mid-extraction, Redis FLUSHALL),
+`scripts/resilience-check.sh`, `node scripts/ui-smoke.cjs`.
 
-MIT
+## 2. Monorepo layout, and why
+
+```
+packages/core    field model + schema generators (coordtool)        pure
+packages/pdf     PDF renderer + text extraction (pdf-lib, pdfjs)    the PDF format adapter
+packages/docops  extraction, evidence checks, validation, carry-over pure, no I/O
+packages/config  shared tsconfig / eslint
+apps/api         HTTP API, capabilities, worker, migrations, seed
+apps/web         React UI (operations, review, submission, Schema Studio)
+```
+
+- **PDF is one format, not the model.** Everything after text extraction works
+  on a format-neutral parsed document (pages → positioned text). Supporting
+  Word, email bodies, images (OCR) or EDI means adding an adapter beside
+  `packages/pdf/text`, not changing extraction, review or storage.
+- **API and web are separate.** The web app has no special access: it calls the
+  same capabilities as integrations and agents (`/api/appport`; also REST and MCP).
+- **Everything is a view or a projection of the data.** PostgreSQL holds the
+  facts (versions, values, evidence, decisions, outcomes); the review screen,
+  progress counts, operations metrics, REST responses and MCP tools are all
+  projections of them.
+- **Configuration is separate from clients.** Document types and templates are
+  data per customer (versioned, edited in Schema Studio), so a customer's
+  documents can change without a code change or a fork.
+
+Turborepo runs `build`, `test`, `lint`, `typecheck` with real dependencies
+(`^build`); tests are not cached because they use live databases.
+
+## 3. Schema, and why
+
+Everything is per tenant (customer), isolated in PostgreSQL by row-level
+security as well as by query. The schema is designed to evolve per customer:
+what to extract is configuration (versioned templates), not tables.
+
+```
+document_type ─ template_version (draft → published, immutable once published)
+document ─ document_version (immutable file, sha256, parsed text, template version used)
+              ├─ submission (every receipt: first, revision, identical re-send; channel)
+              └─ extracted_value (one per field per version)
+                    ├─ evidence (verified verbatim quote, page, offsets, box)
+                    ├─ validation_result (each check, deterministic or model)
+                    └─ review_decision (append-only: approve / correct / carry_over)
+jobs ─ job_attempts, outbox · model_calls (prompt + raw response) · audit_events
+```
+
+- **Versions** are never updated in place; a new upload is a new version. Each
+  version keeps its own parsed text, so evidence for version N is always checked
+  against version N's text, also after N+1 exists.
+- **Values belong to a version.** Re-extraction creates new values; it never
+  edits old ones. A carried-over value points at the value it came from.
+- **Reviews are append-only decisions on a value.** A correction lives *beside*
+  the extraction: the extracted value stays as extracted, `final_value` holds
+  the reviewed one, and every decision (who, when, old/new, note, evidence
+  shown) is kept. API and UI show both.
+
+## 4. How extraction is coordinated
+
+- **PostgreSQL** holds everything that must survive: documents, versions,
+  values, reviews, job state (`queued/running/retry_wait/failed/succeeded`),
+  attempts, failure reasons, and an **outbox** row written in the same
+  transaction as the upload.
+- **Redis (BullMQ)** only carries wake-up messages: "job X is ready".
+
+Upload = one transaction (file, version, job, outbox) → `202` in tens of
+milliseconds. The API then publishes the outbox to Redis immediately; the
+worker's dispatcher and reconciler do it too, as the guarantee. A worker
+**claims** a job with a lease (a conditional update in PostgreSQL); a duplicate
+delivery finds nothing to claim. Results are written in the same transaction
+that marks the job succeeded, only if the lease is still held, and values are
+unique per (version, field) — running the same version twice cannot duplicate.
+
+When something fails:
+- **Redis lost / FLUSHALL**: nothing of value was in it. The reconciler
+  republishes any due job whose message went stale.
+- **Worker killed mid-extraction**: the lease expires (60 s), the reconciler
+  republishes, the next attempt completes; the dead attempt is recorded as
+  *abandoned*.
+- **Model or parse error**: the document shows `failed` with the reason.
+  Transient errors retry with backoff; then it stays `failed` with a **Retry**
+  button / `POST /documents/:id/retry`. Nothing waits in `extracting` forever.
+- **PostgreSQL down**: uploads fail fast (nothing is accepted that isn't stored).
+
+## 5. Open decisions, what I chose, and why
+
+- **Which model extracts.** I chose the model type, not just a vendor. Sending
+  documents to a vision or large generative model is costly, and most values
+  can be verified deterministically once you know which passage they came from.
+  So extraction uses **Laya, a local decision model** (rust-ml-runtime, run
+  in-process in the worker), not a text-generation model: Lomi splits the text
+  into passages and typed candidates (amounts, dates, names…), and Laya answers
+  yes/no questions to pick them. It never writes a value, so it cannot invent
+  one; evidence is still verified verbatim afterwards. The same decision model
+  runs **semantic checks** ("does this value look like the kind of thing this
+  field should be?"). A generative provider (Anthropic, structured output) is
+  available per customer, only with that customer's authorization to send data
+  externally. Prompts and raw responses of every model call are stored.
+- **"Unchanged" for carry-over** = same normalized value + same verbatim quote
+  (whitespace-normalized) + same field definition. Position is ignored, so text
+  shifting around (the revised invoice adds a header and a paragraph) does not
+  re-open anything; a same value with different evidence does.
+- **New version while one is extracting**: supersede. The newest version is
+  processed; the older one is kept, marked *superseded*, and its in-flight
+  results are discarded at commit.
+- **Corrections** live beside the extracted value (above).
+- **Duplicates**: identical bytes are recorded as a re-send of the existing
+  version (any channel) and not reprocessed; a different file with the same
+  identity (e.g. vendor + invoice number) is flagged *possible duplicate*, never
+  merged. Both are labelled in the list and on the document.
+- **Polling, not streaming**: the UI polls every 0.7–2 s only while something
+  is in flight. Extraction takes seconds and review is human-paced, so streaming
+  infrastructure would not change what the reviewer sees.
+- **Ingress**: one URL per customer (`/in/{tenant}`) for API, single and bulk
+  uploads; processing starts immediately.
+
+## 6. What I cut, and what I'd do next
+
+Cut: integration destinations (pushing approved data to customers' systems);
+automatic document-type detection (a wrong-type warning only); word-level
+highlighting (highlights are per text line); lease renewal for very long jobs;
+S3 storage (filesystem volume); slimming the 1.2 GB app image; the Anthropic
+path is written but **untested** against the live API (no key was available).
+
+Next: measure Laya on many more real documents (16/16 on the fixtures, with
+instructions on three fields written after seeing them — not proof of
+generality); field-level confidence thresholds from reviewer outcomes; S3;
+document-type classification at intake.
+
+## 7. At 10,000 documents
+
+- **Revisit what needs review.** Use the recorded reviewer outcomes per field
+  and template (Operations already shows correction rates and model-check vs
+  reviewer results) to set thresholds, auto-approving fields that are never
+  corrected and focusing people on the rest.
+- **Let customers self-serve.** Customers onboard their own document types in
+  Schema Studio, with a Lomi operator reviewing the configuration before it is
+  published — Lomi becomes a service, not a project per customer.
+- **Let agents operate it.** Every operation is an AppPort capability
+  (`@appport/*`, which I built), so it is automatically an MCP tool with the
+  same authorization; extend the Claude Code instructions so agents can run
+  operations work (triage failures, prepare corrections for human approval).
+- **Scale the mechanics**: more workers (claims and dispatch already allow
+  it), lease renewal, partition history tables, move parsed text and raw model
+  I/O to object storage, per-tenant queue fairness.

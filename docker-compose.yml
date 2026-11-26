@@ -74,8 +74,8 @@ services:
 
   models:
     <<: *app
-    # Idempotent: reports "already_installed" after the first run. Needs network on first run only.
-    command: ["sh", "-c", "if [ \"$$LOMI_LAYA\" = 1 ]; then ml-runtime model install laya && ml-runtime model doctor laya; else echo 'Laya disabled (LOMI_LAYA=0)'; fi"]
+    # Installs Laya into a volume; retries, and never blocks the worker (see the script).
+    command: ["sh", "docker/install-models.sh"]
     user: root
     restart: "no"
 
