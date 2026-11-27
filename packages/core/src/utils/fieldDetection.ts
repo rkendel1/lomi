@@ -13,15 +13,19 @@ export interface DetectedRegion {
 
 interface Line { at: number; from: number; to: number; }
 
-const mergeLines = (lines: Line[], tolerance = 3): Line[] => {
+export const mergeLines = (lines: Line[], tolerance = 3): Line[] => {
   const result: Line[] = [];
   for (const line of lines.sort((a, b) => a.at - b.at || a.from - b.from)) {
-    const previous = result[result.length - 1];
-    if (previous && Math.abs(previous.at - line.at) <= tolerance &&
-        line.from <= previous.to + tolerance) {
-      previous.at = Math.round((previous.at + line.at) / 2);
-      previous.from = Math.min(previous.from, line.from);
-      previous.to = Math.max(previous.to, line.to);
+    // Merge only with a line at (nearly) the same position whose span actually
+    // overlaps. Comparing with the last line alone, one-sided, chained the
+    // separate edges of stacked boxes (each ~2 px wide when rendered) into one
+    // long phantom rule down the page.
+    const target = result.find((previous) => Math.abs(previous.at - line.at) <= tolerance &&
+      line.from <= previous.to + tolerance && line.to >= previous.from - tolerance);
+    if (target) {
+      target.at = Math.round((target.at + line.at) / 2);
+      target.from = Math.min(target.from, line.from);
+      target.to = Math.max(target.to, line.to);
     } else result.push({ ...line });
   }
   return result;
@@ -55,6 +59,23 @@ export interface RgbaImage {
   width: number;
   height: number;
   data: Uint8ClampedArray;
+}
+
+/**
+ * Text printed on the same row immediately left of a box (within 260 px,
+ * vertically centred on it): the box's label. Words of one label are joined.
+ */
+function labelLeftOf(boxLeft: number, top: number, bottom: number, words: OCRWord[]): string | null {
+  const mid = (top + bottom) / 2;
+  const row = words
+    .filter(w => Math.abs(w.y + w.height / 2 - mid) <= Math.max(6, (bottom - top) / 2) &&
+      w.x + w.width <= boxLeft + 2 && boxLeft - (w.x + w.width) <= 260)
+    .sort((a, b) => a.x - b.x);
+  if (!row.length) return null;
+  // Keep the words that run up to the box (a label, not another column's text).
+  const nearest = row[row.length - 1];
+  const label = row.filter(w => nearest.x - (w.x + w.width) <= 220).map(w => w.text).join(' ').trim();
+  return label || null;
 }
 
 /** Detect empty, ruled form cells in a rendered page. Pixel coordinates use a
@@ -92,9 +113,10 @@ export function detectFieldRegions(
           const cellLeft = sides[runEnd].at;
           const cellRight = sides[runEnd + 1].at;
           const cellWidth = cellRight - cellLeft;
+          // Any text overlapping the interval means these "boxes" are letter strokes, not character boxes.
           const hasText = words.some(word =>
-            word.x + word.width / 2 > cellLeft && word.x + word.width / 2 < cellRight &&
-            word.y + word.height / 2 > top.at && word.y + word.height / 2 < bottom.at);
+            word.x < cellRight && word.x + word.width > cellLeft &&
+            word.y < bottom.at && word.y + word.height > top.at);
           // Tolerate a missing divider in a character-box run. That produces
           // one interval roughly twice as wide as its neighbors.
           if (hasText || cellWidth < 7 || cellWidth > Math.max(44, cellHeight * 3)) break;
@@ -143,9 +165,27 @@ export function detectFieldRegions(
         let regionY = top.at + 2;
         let regionWidth = cellWidth - 2;
         let regionHeight = cellHeight - 3;
-        if (!insideWords.length && cellWidth > Math.max(28, cellHeight * 1.6)) {
+        // Text inside the box that is only a printed hint ("MM/DD/YYYY", "$"), not a label filling it.
+        const hintOnly = insideWords.length > 0 && insideWords.length <= 2 && cellText.length <= 12 &&
+          textRight - x1 > cellWidth * 0.25;
+        const isWide = cellWidth > Math.max(28, cellHeight * 1.6);
+        // The label printed on the same row, just left of the box (inputs and checkboxes alike).
+        const rowLabel = !insideWords.length || hintOnly ? labelLeftOf(x1, top.at, bottom.at, words) : null;
+        const labelBeside = isWide ? rowLabel : null;
+        // A filled copy: the box holds a value (text starting at its left edge) and its label is printed to its left.
+        const filledLabel = isWide && insideWords.length > 0 && !hintOnly &&
+          Math.min(...insideWords.map(w => w.x)) - x1 < cellWidth * 0.2 &&
+          !(insideWords.length && belowHeight >= Math.max(10, typicalWordHeight * 1.1) && cellHeight >= typicalWordHeight * 2.2)
+          ? labelLeftOf(x1, top.at, bottom.at, words)
+          : null;
+        // A small closed shape overlapping text is part of a glyph, not a checkbox.
+        if (!insideWords.length && words.some(w => w.x < x2 && w.x + w.width > x1 && w.y < bottom.at && w.y + w.height > top.at)) continue;
+        if (!insideWords.length && cellWidth > Math.max(28, cellHeight * 1.6) && !labelBeside) {
           // Large empty table cells are layout, not evidence of an input.
           continue;
+        } else if (labelBeside || filledLabel) {
+          // A standalone box with its label printed just to the left (the most
+          // common input style on simple forms), empty or already filled in. Keep the full box.
         } else if (insideWords.length &&
                    belowHeight >= Math.max(10, typicalWordHeight * 1.1) &&
                    cellHeight >= typicalWordHeight * 2.2) {
@@ -159,7 +199,8 @@ export function detectFieldRegions(
         } else if (insideWords.length) {
           continue;
         }
-        const label = cellText ||
+        // Never name a filled box after its contents: that is the value.
+        const label = (filledLabel ?? rowLabel ?? cellText) ||
           findNearbyLabel(x1, top.at, cellWidth, cellHeight, words, 120) || undefined;
         output.push({
           x: regionX, y: regionY, width: regionWidth, height: regionHeight,

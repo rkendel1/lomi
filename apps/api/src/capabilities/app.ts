@@ -5,8 +5,8 @@ import { errors, type JsonValue, type Session } from '@appport/protocol';
 import { s } from '@appport/schema';
 import type { TemplateDefinition } from '@lomi/docops';
 import { audit, DomainError, type Actor, type Ctx } from '../domain/common';
-import { addVersion, getDocument, getProgress, listDocuments, nextForReview, originalFile, setDocumentType, submitDocument } from '../domain/documents';
-import { createForm } from '../domain/forms';
+import { addVersion, getDocument, getProgress, listDocuments, listRecords, nextForReview, originalFile, rereadDocument, setDocumentType, submitDocument } from '../domain/documents';
+import { createForm, createFormFromPdf, extendForm, REGION_FIELD_TYPES } from '../domain/forms';
 import { generatedFile, requestGeneration, verifyGenerated } from '../domain/generation';
 import { listFailures, operationalStats, providerReadiness, provenance, retryDocument, retryJob } from '../domain/operations';
 import { approveVerified, proposeCorrection, reviewValue } from '../domain/review';
@@ -314,6 +314,23 @@ export function buildApplication(ctx: Ctx): AppPortApplication {
       output: anyObject,
       run: async ({ tenant: _t, ...rest }, c) => (await createForm(ctx, c.actor, { tenantId: c.tenantId, ...rest })) as unknown as Record<string, unknown>,
     }),
+    cap({
+      name: 'templates.forms.import',
+      description:
+        "Create a fixed-layout form from its PDF and the fields located on it (coordtool: page and box in PDF points). Incoming copies are identified by the form's printed layout and each value is read from its own box. Publishes unless publish is false.",
+      permissions: ['lomi.templates.write', 'lomi.templates.publish'], effect: 'consequential',
+      input: s.object({
+        tenant, name: s.string(), key: s.optional(s.string()), description: s.optional(s.string()), publish: s.optional(s.boolean()),
+        filename: s.string(), contentBase64: s.string(),
+        fields: s.array(s.object({
+          label: s.string(), type: s.enum([...REGION_FIELD_TYPES]), page: s.integer(), x: s.number(), y: s.number(), width: s.number(), height: s.number(),
+          key: s.optional(s.string()), sourceFieldId: s.optional(s.string()), required: s.optional(s.boolean()),
+        })),
+      }),
+      output: anyObject,
+      run: async ({ tenant: _t, contentBase64, ...rest }, c) =>
+        (await createFormFromPdf(ctx, c.actor, { tenantId: c.tenantId, ...rest, bytes: fromB64(contentBase64) })) as unknown as Record<string, unknown>,
+    }),
 
     // ── Documents ──────────────────────────────────────────────────────────
     cap({
@@ -359,6 +376,40 @@ export function buildApplication(ctx: Ctx): AppPortApplication {
       run: async ({ tenant: _t, mine, ...rest }, c) => ({
         items: await listDocuments(ctx, { tenantId: c.tenantId, ...rest, ...(mine ? { submittedBy: c.actor.principalId } : {}) }),
       }),
+    }),
+    cap({
+      name: 'templates.fields.add',
+      description:
+        "Extend a form's schema with elements its current version does not capture (e.g. found while mapping an unrecognized document into it): positional boxes located on the document, or described fields read by the model. Saves a new template version (published unless publish is false); earlier versions and documents are unchanged.",
+      permissions: ['lomi.templates.write', 'lomi.templates.publish'], effect: 'consequential',
+      input: s.object({
+        tenant, documentType: s.string(), documentId: s.optional(s.string()), publish: s.optional(s.boolean()),
+        regionFields: s.optional(s.array(s.object({
+          label: s.string(), type: s.enum([...REGION_FIELD_TYPES]), page: s.integer(), x: s.number(), y: s.number(), width: s.number(), height: s.number(),
+          key: s.optional(s.string()), sourceFieldId: s.optional(s.string()), required: s.optional(s.boolean()),
+        }))),
+        describedFields: s.optional(s.array(s.object({
+          label: s.string(), type: s.enum(['string', 'date', 'money', 'number', 'percent']), instructions: s.optional(s.string()), required: s.optional(s.boolean()), key: s.optional(s.string()),
+        }))),
+      }),
+      output: anyObject,
+      run: async ({ tenant: _t, ...rest }, c) => (await extendForm(ctx, c.actor, { tenantId: c.tenantId, ...rest })) as unknown as Record<string, unknown>,
+    }),
+    cap({
+      name: 'records.list',
+      description: "The customer's normalized data for one form: one row per document (current version), one column per field; each cell is the reviewed value if decided, else as extracted, with its state.",
+      permissions: ['documents.read'], effect: 'observation',
+      input: s.object({ tenant, documentType: s.string(), limit: s.optional(s.integer()), offset: s.optional(s.integer()) }),
+      output: anyObject,
+      run: async ({ tenant: _t, ...rest }, c) => (await listRecords(ctx, { tenantId: c.tenantId, ...rest })) as unknown as Record<string, unknown>,
+    }),
+    cap({
+      name: 'documents.reread',
+      description: "Read a processed document again with its form's latest published version (e.g. after elements were added). The same file becomes the next version; unchanged reviewed values carry over.",
+      permissions: ['documents.retry'], effect: 'consequential',
+      input: s.object({ tenant, documentId: s.string() }),
+      output: s.object({ documentId: s.string(), versionId: s.string(), version: s.integer(), status: s.string() }),
+      run: async (i, c) => rereadDocument(ctx, c.actor, { tenantId: c.tenantId, documentId: i.documentId }),
     }),
     cap({
       name: 'documents.type.set',

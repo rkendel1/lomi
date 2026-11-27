@@ -1,9 +1,10 @@
 import type { Field, FieldType } from '@lomi/core';
-import type { TemplateDefinition } from '@lomi/docops';
+import { layoutFingerprint, printedTextInBox, type TemplateDefinition } from '@lomi/docops';
+import { extractPdfText } from '@lomi/pdf/text';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { withTenant } from '../db/pool';
 import { DomainError, type Actor, type Ctx } from './common';
-import { createDocumentType, publishTemplate, saveDraft, uploadBasePdf, validateDefinition } from './templates';
+import { basePdfFile, createDocumentType, publishTemplate, saveDraft, uploadBasePdf, validateDefinition } from './templates';
 
 /**
  * Quick form setup: a document type defined by the list of things to read
@@ -127,5 +128,209 @@ export async function createForm(
     version: draft.version,
     status: published ? 'published' : 'draft',
     fields: plan.definition.fields.map((f) => ({ key: f.semanticKey, label: f.displayLabel })),
+  };
+}
+
+/** Field kinds a positional form field can have (coordtool's types that carry business data). */
+export const REGION_FIELD_TYPES = ['text', 'multiline', 'date', 'dob', 'currency', 'number', 'checkbox', 'phone', 'zip', 'ssn', 'ein'] as const;
+export type RegionFieldType = (typeof REGION_FIELD_TYPES)[number];
+
+/** A field located on the form by coordtool (or drawn by the operator): where it is and what it holds. */
+export interface RegionFieldSpec {
+  label: string;
+  type: RegionFieldType;
+  page: number;
+  /** PDF points, bottom-left origin (coordtool's field space). */
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  key?: string;
+  /** The PDF's own field name, for fillable forms; kept so outputs can fill the original widget. */
+  sourceFieldId?: string;
+  required?: boolean;
+}
+
+const MAX_REGION_FIELDS = 300;
+
+type ParsedPdf = Awaited<ReturnType<typeof extractPdfText>>;
+
+/**
+ * One positional field. `bounds` gives the page sizes the box must fit in;
+ * `printed` is the blank form, whose text inside the box is recorded as
+ * printed (never a value). Keys already in `seen` get a numbered suffix.
+ */
+function regionField(typeKey: string, f: RegionFieldSpec, ref: { bounds: Pick<ParsedPdf, 'pages' | 'pageCount'>; printed: ParsedPdf | null }, seen: Set<string>): Field {
+  const page = ref.bounds.pages.find((p) => p.pageIndex === f.page);
+  const label = (f.label?.trim() || f.sourceFieldId?.trim() || f.key?.trim() || '').slice(0, 120);
+  if (!label) throw new DomainError('INVALID_INPUT', 'Every field needs a label.');
+  if (!page) throw new DomainError('INVALID_INPUT', `"${label}" is on page ${f.page + 1}, but the document has ${ref.bounds.pageCount} page(s).`);
+  if (!(f.width > 0 && f.height > 0) || f.x < -1 || f.y < -1 || f.x + f.width > page.width + 1 || f.y + f.height > page.height + 1) {
+    throw new DomainError('INVALID_INPUT', `"${label}" is not inside page ${f.page + 1}.`);
+  }
+  if (!(REGION_FIELD_TYPES as readonly string[]).includes(f.type)) throw new DomainError('INVALID_INPUT', `"${label}" has an unknown type "${f.type}".`);
+  let fieldKey = (f.key?.trim() || toKey(label) || 'field').slice(0, 60);
+  // Repeated labels (e.g. "Date" in two sections) get a numbered key rather than an error.
+  for (let n = 2; seen.has(fieldKey); n++) fieldKey = `${fieldKey.replace(/_\d+$/, '')}_${n}`;
+  seen.add(fieldKey);
+  const isNumber = f.type === 'number';
+  const type: FieldType = isNumber ? 'text' : (f.type as FieldType);
+  const valueType: FormValueType = type === 'date' || type === 'dob' ? 'date' : type === 'currency' ? 'money' : isNumber ? 'number' : 'string';
+  const box = { x: f.x, y: f.y, width: f.width, height: f.height };
+  const exclude = ref.printed ? printedTextInBox(ref.printed.pages.find((p) => p.pageIndex === f.page), box) : [];
+  return {
+    id: `${typeKey}_${fieldKey}`,
+    name: f.sourceFieldId?.trim() || `${typeKey}_${fieldKey}`,
+    sourceFieldId: f.sourceFieldId?.trim() || `${typeKey}_${fieldKey}`,
+    semanticKey: `${typeKey}.${fieldKey}`,
+    displayLabel: label,
+    page: f.page,
+    ...box,
+    type,
+    fontSize: 10,
+    maxWidth: f.width,
+    ...(f.required ? { required: true } : {}),
+    ...(isNumber ? { dataType: 'number' as const } : {}),
+    ...(type === 'date' || type === 'dob' ? { transformType: 'date' as const, dateFormat: 'YYYY-MM-DD' as const } : {}),
+    ...(type === 'currency' ? { transformType: 'currency' as const, currencySymbol: 'USD' as const } : {}),
+    extraction: { method: 'region' as const, valueType, ...(exclude.length ? { exclude } : {}) },
+    validationRules: [],
+  };
+}
+
+/**
+ * Plan a fixed-layout form from its PDF and the fields located on it. Each
+ * field is read from its own box on incoming documents (`region`), with text
+ * printed inside the box on the blank form ignored; the form's printed labels
+ * become its layout fingerprint for identification. Nothing is written.
+ */
+export async function planFormFromPdf(input: { key?: string; name: string; bytes: Uint8Array; fields: RegionFieldSpec[] }) {
+  const name = input.name.trim();
+  if (!name) throw new DomainError('INVALID_INPUT', 'Give the form a name, e.g. "Supplier onboarding form".');
+  const key = (input.key?.trim() || toKey(name)).slice(0, 63);
+  if (!TYPE_KEY.test(key)) throw new DomainError('INVALID_INPUT', `"${key}" is not a valid form key: use lowercase letters, digits and _ , starting with a letter.`);
+  if (Buffer.from(input.bytes.subarray(0, 5)).toString('latin1') !== '%PDF-') throw new DomainError('INVALID_INPUT', 'The form file is not a PDF.');
+  const blank = await extractPdfText(input.bytes).catch(() => {
+    throw new DomainError('INVALID_INPUT', 'The form PDF could not be read.');
+  });
+  const specs = input.fields.filter((f) => f.label?.trim() || f.key?.trim() || f.sourceFieldId?.trim());
+  if (!specs.length) throw new DomainError('INVALID_INPUT', 'No fields were located on the form. Draw at least one box.');
+  if (specs.length > MAX_REGION_FIELDS) throw new DomainError('INVALID_INPUT', `At most ${MAX_REGION_FIELDS} fields per form.`);
+
+  const seen = new Set<string>();
+  const fields = specs.map((f) => regionField(key, f, { bounds: blank, printed: blank }, seen));
+  const definition: TemplateDefinition = { fields, crossFieldRules: [], identityKeys: [], layout: layoutFingerprint(blank, fields) };
+  const problems = validateDefinition(definition);
+  if (problems.length) throw new DomainError('INVALID_INPUT', 'The form has problems.', { problems });
+  return { key, name, definition };
+}
+
+/**
+ * Create a fixed-layout form from its PDF: the PDF becomes the base (output)
+ * PDF, the located fields become a template read by position, and the printed
+ * layout identifies filled copies. Published unless `publish` is false.
+ */
+export async function createFormFromPdf(
+  ctx: Ctx,
+  actor: Actor,
+  input: { tenantId: string; key?: string; name: string; description?: string; filename: string; bytes: Uint8Array; fields: RegionFieldSpec[]; publish?: boolean }
+) {
+  const plan = await planFormFromPdf(input);
+  const taken = await withTenant(ctx.db, input.tenantId, async (tx) => (await tx.query('SELECT 1 FROM document_types WHERE tenant_id = $1 AND key = $2', [input.tenantId, plan.key])).rows[0]);
+  if (taken) throw new DomainError('CONFLICT', `A form with the key "${plan.key}" already exists for this customer.`);
+
+  const type = await createDocumentType(ctx, actor, { tenantId: input.tenantId, key: plan.key, name: plan.name, description: input.description?.trim() || undefined });
+  const base = await uploadBasePdf(ctx, actor, { tenantId: input.tenantId, documentType: plan.key, filename: input.filename || `${plan.key}.pdf`, bytes: input.bytes });
+  const draft = await saveDraft(ctx, actor, { tenantId: input.tenantId, documentType: plan.key, definition: plan.definition, basePdfId: base.id, notes: 'Created from the form PDF (coordtool field location)' });
+  const published = input.publish === false ? null : await publishTemplate(ctx, actor, { tenantId: input.tenantId, templateVersionId: draft.id });
+  return {
+    documentType: { id: type.id, key: plan.key, name: plan.name },
+    templateVersionId: draft.id,
+    version: draft.version,
+    status: published ? 'published' : 'draft',
+    fields: plan.definition.fields.map((f) => ({ key: f.semanticKey, label: f.displayLabel, page: f.page, type: f.type })),
+    layoutAnchors: plan.definition.layout?.anchors.length ?? 0,
+  };
+}
+
+/**
+ * Extend a form's schema with elements its current version does not capture,
+ * typically found while mapping an unrecognized document into it. Builds on
+ * the open draft if there is one, else the latest published version, and
+ * saves a new version (published unless `publish` is false). Earlier versions
+ * and the documents processed with them are unchanged.
+ *
+ * Positional fields may be located on the reference document (`documentId`):
+ * its pages give the bounds; printed text inside a box is taken from the
+ * form's blank PDF only, because on a filled document it may be the value.
+ */
+export async function extendForm(
+  ctx: Ctx,
+  actor: Actor,
+  input: { tenantId: string; documentType: string; documentId?: string; regionFields?: RegionFieldSpec[]; describedFields?: FormFieldSpec[]; publish?: boolean }
+) {
+  const regionSpecs = (input.regionFields ?? []).filter((f) => f.label?.trim() || f.key?.trim() || f.sourceFieldId?.trim());
+  const describedSpecs = (input.describedFields ?? []).filter((f) => f.label?.trim());
+  if (!regionSpecs.length && !describedSpecs.length) throw new DomainError('INVALID_INPUT', 'Add at least one new element.');
+  if (regionSpecs.length + describedSpecs.length > MAX_REGION_FIELDS) throw new DomainError('INVALID_INPUT', `At most ${MAX_REGION_FIELDS} new elements at once.`);
+
+  const current = await withTenant(ctx.db, input.tenantId, async (tx) => {
+    const type = (await tx.query('SELECT id, key FROM document_types WHERE tenant_id = $1 AND key = $2', [input.tenantId, input.documentType])).rows[0];
+    if (!type) throw new DomainError('NOT_FOUND', 'Document type not found');
+    const tv = (
+      await tx.query(
+        `SELECT id, version, status, definition, base_pdf_id FROM template_versions WHERE document_type_id = $1 AND status IN ('draft', 'published')
+         ORDER BY (status = 'draft') DESC, version DESC LIMIT 1`,
+        [type.id]
+      )
+    ).rows[0];
+    if (!tv) throw new DomainError('CONFLICT', 'This form has no template yet; set it up in Schema Studio first.');
+    const reference = input.documentId
+      ? (
+          await tx.query(
+            `SELECT dv.parsed_text, dv.page_count FROM documents d JOIN document_versions dv ON dv.id = d.current_version_id WHERE d.id = $1 AND d.tenant_id = $2`,
+            [input.documentId, input.tenantId]
+          )
+        ).rows[0]
+      : null;
+    if (input.documentId && !reference) throw new DomainError('NOT_FOUND', 'Document not found');
+    return { type, tv, reference };
+  });
+
+  const definition = current.tv.definition as TemplateDefinition;
+  const seen = new Set(definition.fields.map((f) => f.semanticKey.split('.').slice(1).join('.')));
+  const fields: Field[] = [...definition.fields];
+
+  if (regionSpecs.length) {
+    const blank = current.tv.base_pdf_id ? await extractPdfText((await basePdfFile(ctx, { tenantId: input.tenantId, basePdfId: current.tv.base_pdf_id })).bytes).catch(() => null) : null;
+    const refPages = current.reference?.parsed_text as ParsedPdf['pages'] | null | undefined;
+    const bounds = refPages?.length ? { pages: refPages, pageCount: refPages.length } : blank;
+    if (!bounds) throw new DomainError('INVALID_INPUT', 'There is no document to place the new boxes on: pass the document they were located on.');
+    for (const f of regionSpecs) fields.push(regionField(current.type.key, f, { bounds, printed: blank }, seen));
+  }
+  describedSpecs.forEach((f, i) => {
+    let fieldKey = (f.key?.trim() || toKey(f.label)).slice(0, 60);
+    if (!fieldKey) throw new DomainError('INVALID_INPUT', `Field "${f.label}" needs a name with letters or digits.`);
+    for (let n = 2; seen.has(fieldKey); n++) fieldKey = `${fieldKey.replace(/_\d+$/, '')}_${n}`;
+    seen.add(fieldKey);
+    fields.push(formField(current.type.key, definition.fields.length + i, { key: fieldKey, label: f.label.trim(), type: f.type, instructions: f.instructions?.trim() || f.label.trim().toLowerCase(), required: f.required }));
+  });
+
+  const next: TemplateDefinition = { ...definition, fields };
+  const added = fields.slice(definition.fields.length);
+  const draft = await saveDraft(ctx, actor, {
+    tenantId: input.tenantId,
+    documentType: input.documentType,
+    definition: next,
+    notes: `Extended with ${added.length} element(s)${input.documentId ? ` found on document ${input.documentId}` : ''}: ${added.map((f) => f.displayLabel).join(', ')}`,
+  });
+  const published = input.publish === false ? null : await publishTemplate(ctx, actor, { tenantId: input.tenantId, templateVersionId: draft.id });
+  return {
+    documentType: input.documentType,
+    templateVersionId: draft.id,
+    version: draft.version,
+    previousVersion: current.tv.version as number,
+    status: published ? 'published' : 'draft',
+    added: added.map((f) => ({ key: f.semanticKey, label: f.displayLabel, method: f.extraction?.method ?? null })),
   };
 }

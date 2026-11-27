@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import type { Field } from '@lomi/core';
 import { PDFViewer } from '../components/PDFViewer';
+import { MapIntoForm } from '../components/ops/MapIntoForm';
 import { call, can, fetchPdf, type Me } from '../lib/client';
 import { ProgressCounts, StatusBadge, STATE_LABELS, TypeChooser, TypeTag, type Progress, type TypeInfo } from './shared';
 
@@ -66,6 +67,7 @@ export const DocumentDetail: React.FC<{ tenant: string; documentId: string; me: 
   const [tab, setTab] = useState<'values' | 'versions' | 'receipts' | 'history' | 'outputs'>('values');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [extending, setExtending] = useState(false);
   const [view, setView] = useState<'evidence' | 'original'>('evidence');
   const [flash, setFlash] = useState<string | null>(() => {
     try {
@@ -208,11 +210,20 @@ export const DocumentDetail: React.FC<{ tenant: string; documentId: string; me: 
               <button onClick={() => void fetchPdf(`/api/documents/${documentId}/file?output=${latestOutput.id}`, tenant, 'output.pdf').then((f) => window.open(URL.createObjectURL(f)))}>Download output</button>
             )}
             <button onClick={() => file && window.open(URL.createObjectURL(file))} disabled={!file}>Original PDF</button>
+            {me.operator && doc.documentType && doc.viewing.isCurrent && doc.viewing.processingStatus === 'processed' && (
+              <button onClick={() => setExtending((v) => !v)}>{extending ? 'Close' : 'Capture more…'}</button>
+            )}
           </div>
         </div>
       </div>
       {flash && <div className="flash" role="status">{flash}</div>}
-      {doc.status === 'needs_type' && can(me, tenant, 'documents.submit') && (
+      {extending && doc.documentType && (
+        <MapIntoForm tenant={tenant} documentId={documentId} file={file} currentType={doc.documentType.key} onDone={() => { setExtending(false); void load(); }} />
+      )}
+      {doc.status === 'needs_type' && me.operator && (
+        <MapIntoForm tenant={tenant} documentId={documentId} file={file} classification={doc.classification as any} onDone={() => void load()} />
+      )}
+      {doc.status === 'needs_type' && !me.operator && can(me, tenant, 'documents.submit') && (
         <section className="card card-action">
           <h2>What kind of document is this?</h2>
           <TypeChooser tenant={tenant} documentId={documentId} reason={doc.failureReason} scores={doc.classification?.scores} onChosen={() => void load()} />

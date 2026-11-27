@@ -12,7 +12,13 @@ import {
 } from '@lomi/docops';
 import { extractPdfText } from '@lomi/pdf/text';
 import { withTenant, type Tx } from '../db/pool';
+import { layoutMatch, type LayoutFingerprint } from '@lomi/docops';
 import type { ClassificationResult, TypeCandidate } from '../llm/layaClassification';
+
+/** A fixed-layout form is identified when this share of its printed anchors is in place… */
+const MIN_LAYOUT_SCORE = 0.8;
+/** …out of at least this many (fewer is too little evidence). */
+const MIN_LAYOUT_ANCHORS = 4;
 import { selectProviders } from '../llm/providers';
 import { completeJob, failJob, holdsLease, type ClaimedJob } from '../jobs/lifecycle';
 import { loadObject } from '../storage/objectStore';
@@ -94,9 +100,9 @@ async function publishedTemplate(tx: Tx, documentTypeId: string): Promise<NonNul
 }
 
 /** The customer's published types, as the classifier sees them. */
-async function typeCandidates(tx: Tx): Promise<Array<TypeCandidate & { id: string }>> {
+async function typeCandidates(tx: Tx): Promise<Array<TypeCandidate & { id: string; layout?: LayoutFingerprint }>> {
   const { rows } = await tx.query(
-    `SELECT DISTINCT ON (dt.id) dt.id, dt.key, dt.name, dt.description, tv.definition->'fields' AS fields
+    `SELECT DISTINCT ON (dt.id) dt.id, dt.key, dt.name, dt.description, tv.definition->'fields' AS fields, tv.definition->'layout' AS layout
      FROM document_types dt JOIN template_versions tv ON tv.document_type_id = dt.id AND tv.status = 'published'
      ORDER BY dt.id, tv.version DESC`
   );
@@ -105,6 +111,7 @@ async function typeCandidates(tx: Tx): Promise<Array<TypeCandidate & { id: strin
     key: r.key,
     name: r.name,
     description: r.description,
+    layout: r.layout ?? undefined,
     fields: ((r.fields ?? []) as Array<{ displayLabel?: string; semanticKey: string; extraction?: unknown }>)
       .filter((f) => f.extraction)
       .map((f) => f.displayLabel || f.semanticKey),
@@ -154,17 +161,37 @@ async function identifyType(
     await record({ at: new Date().toISOString(), reason: 'Only one document type is published.', typeKey: candidates[0].key }, candidates[0].id, undefined, 'only_type');
     return { kind: 'identified', typeId: candidates[0].id };
   }
+  // A fixed-layout form is recognized by its printed text at known positions: deterministic, no model.
+  const layouts = candidates
+    .filter((c) => (c.layout?.anchors.length ?? 0) >= MIN_LAYOUT_ANCHORS)
+    .map((c) => ({ c, ...layoutMatch(parsed, c.layout) }))
+    .sort((a, b) => b.score - a.score);
+  const [bestLayout, nextLayout] = layouts;
+  if (bestLayout && bestLayout.score >= MIN_LAYOUT_SCORE && (!nextLayout || nextLayout.score < MIN_LAYOUT_SCORE)) {
+    await record(
+      {
+        at: new Date().toISOString(), method: 'layout', typeKey: bestLayout.c.key,
+        reason: `Printed layout matches ${bestLayout.c.key}: ${bestLayout.matched} of ${bestLayout.total} anchors in place.`,
+        layoutScores: layouts.map((l) => ({ key: l.c.key, score: Number(l.score.toFixed(3)) })),
+      },
+      bestLayout.c.id, undefined, 'layout'
+    );
+    return { kind: 'identified', typeId: bestLayout.c.id };
+  }
+
+  // Kept when nothing is decided, so a person mapping the document sees the nearest fixed-layout forms first.
+  const layoutScores = layouts.map((l) => ({ key: l.c.key, score: Number(l.score.toFixed(3)) }));
   const classifier = ctx.providers.classifier;
   const readiness = classifier ? await classifier.readiness() : { ready: false, detail: 'Laya is not enabled on this worker' };
   if (!classifier || !readiness.ready) {
     const reason = `Automatic identification is unavailable (${readiness.detail}).`;
-    await record({ at: new Date().toISOString(), reason }, null);
+    await record({ at: new Date().toISOString(), reason, layoutScores }, null);
     return { kind: 'needs_type', reason };
   }
   const result = await classifier.classify(parsed, candidates);
   const chosen = candidates.find((c) => c.key === result.typeKey) ?? null;
   await record(
-    { at: new Date().toISOString(), provider: classifier.name, model: result.model, typeKey: result.typeKey, scores: result.scores, reason: result.reason },
+    { at: new Date().toISOString(), provider: classifier.name, model: result.model, typeKey: result.typeKey, scores: result.scores, reason: result.reason, layoutScores },
     chosen?.id ?? null,
     result
   );

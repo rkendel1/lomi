@@ -534,4 +534,16 @@ ALTER TABLE document_versions ADD CONSTRAINT document_versions_processing_status
   ('received', 'queued', 'parsing', 'extracting', 'validating', 'processed', 'superseded', 'failed_retryable', 'failed_operator', 'needs_type'));
 `,
   },
+  {
+    id: '004_fixed_layout_forms',
+    sql: `
+-- Fixed-layout forms (set up from the form's PDF with coordtool): values are read from
+-- each field's box ('region'), and a document can be identified by its printed layout.
+ALTER TABLE extracted_values DROP CONSTRAINT extracted_values_method_check;
+ALTER TABLE extracted_values ADD CONSTRAINT extracted_values_method_check CHECK (method IN ('pattern', 'llm', 'region'));
+ALTER TABLE documents DROP CONSTRAINT documents_type_source_check;
+ALTER TABLE documents ADD CONSTRAINT documents_type_source_check
+  CHECK (type_source IN ('submitted', 'ingress_default', 'only_type', 'layout', 'detected', 'person', 'pending'));
+`,
+  },
 ];

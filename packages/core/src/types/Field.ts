@@ -113,8 +113,11 @@ export interface Field {
  * group is the value and whose whole match is the supporting quote.
  * `llm` extraction asks the configured model (a generative LLM, or a local
  * decision model choosing among verbatim candidates), guided by `instructions`.
+ * `region` extraction is deterministic and positional, for fixed-layout forms:
+ * the value is the text inside the field's own box (page, x, y, width, height),
+ * including values typed into fillable PDF fields.
  */
-export type ExtractionMethod = 'pattern' | 'llm';
+export type ExtractionMethod = 'pattern' | 'llm' | 'region';
 
 export interface FieldExtractionConfig {
   method: ExtractionMethod;
@@ -124,6 +127,8 @@ export interface FieldExtractionConfig {
   instructions?: string;
   /** The kind of value to look for (model extraction). Defaults from the field type. */
   valueType?: 'string' | 'date' | 'money' | 'number' | 'percent';
+  /** Region extraction: text printed inside the box on the blank form (hints like "MM/DD/YYYY"); never a value. */
+  exclude?: string[];
 }
 
 export type FieldValidationRule =

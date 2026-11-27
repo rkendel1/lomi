@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { call, can, type Me } from '../lib/client';
 import { UploadPanel } from '../components/ops/UploadPanel';
+import { RecordsTable } from '../components/ops/RecordsTable';
 import { ProgressBar, StatusBadge, TypeTag, type TypeInfo } from './shared';
 
 export interface DocumentSummary {
@@ -42,6 +43,7 @@ export const DocumentsPage: React.FC<{ tenant: string; me: Me }> = ({ tenant, me
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [showUpload, setShowUpload] = useState(false);
+  const [view, setView] = useState<'documents' | 'records'>('documents');
 
   const load = useCallback(async () => {
     try {
@@ -126,14 +128,19 @@ export const DocumentsPage: React.FC<{ tenant: string; me: Me }> = ({ tenant, me
             <option key={v} value={v}>{l}</option>
           ))}
         </select>
-        <select aria-label="Type filter" value={type} onChange={(e) => setType(e.target.value)}>
+        <select aria-label="Type filter" value={type} onChange={(e) => { setType(e.target.value); if (!e.target.value) setView('documents'); }}>
           <option value="">All types</option>
           {types.map((t) => (
             <option key={t.key} value={t.key}>{t.name}</option>
           ))}
         </select>
+        <div className="seg-toggle" role="tablist" aria-label="View">
+          <button role="tab" aria-selected={view === 'documents'} className={view === 'documents' ? 'active' : ''} onClick={() => setView('documents')}>Documents</button>
+          <button role="tab" aria-selected={view === 'records'} className={view === 'records' ? 'active' : ''} disabled={!type} title={type ? '' : 'Choose a form to see its records'} onClick={() => setView('records')}>Records</button>
+        </div>
       </div>
       {error && <div className="error">{error}</div>}
+      {view === 'records' && type ? <RecordsTable tenant={tenant} documentType={type} /> : (
       <table className="doc-table">
         <thead>
           <tr>
@@ -177,6 +184,7 @@ export const DocumentsPage: React.FC<{ tenant: string; me: Me }> = ({ tenant, me
           )}
         </tbody>
       </table>
+      )}
     </div>
   );
 };

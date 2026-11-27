@@ -142,6 +142,31 @@ When something fails:
 
 ## 5. Open decisions, what I chose, and why
 
+- **Fixed-layout forms are an ETL layer for ingress, built on coordtool.** A
+  form is set up from its own PDF (Schema Studio → *New form* → *From the
+  form's PDF*): coordtool locates every field on every page (fillable widgets
+  exactly; printed boxes from the rendered page, labelled from its text, or
+  OCR for scans), the operator corrects them in the mapper, and the template
+  stores each element's page and box. Incoming copies are **identified by
+  layout** (the form's printed labels at their positions, ≥ 80 % in place; no
+  model), **extracted by position** (`region`: the text inside each box,
+  including values typed into fillable fields; printed hints like
+  "MM/DD/YYYY" ignored), **normalized** by type, and land in the customer's
+  **records** for that form (one row per document, one column per element;
+  `records.list`, Documents → Records, CSV). Laya remains the fallback for
+  identification and the reader for forms whose layout varies.
+- **Unrecognized documents are mapped into existing forms, and forms grow.**
+  An operator maps a document Lomi could not identify into a form (nearest
+  layout first); coordtool shows which boxes the form does not read yet, and
+  adding them saves a new template version (`templates.fields.add`). The
+  document is then processed with it. An already processed document can be
+  read again with the extended version (`documents.reread`): the same file
+  becomes its next version, unchanged reviewed values carry over, only new
+  elements need review. Earlier versions and their data never change, and
+  element keys are stable, so the records keep one column per element.
+  Limits: moving existing boxes for a re-designed layout is not supported
+  (that is a new layout, not an extension); the server has no OCR, so scanned
+  *submissions* are not read by position (setup from a scan works).
 - **Identifying what was sent.** A submission may omit its type. After parsing,
   the worker asks Laya one yes/no question per published type ("Is this
   document a lease (a rental agreement…), a document that states tenant name,

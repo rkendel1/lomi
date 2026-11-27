@@ -276,3 +276,12 @@ input, select, textarea { font: inherit; border: 1px solid var(--line); border-r
 .login-token label { display: grid; gap: 4px; flex: 1; font-size: 13px; }
 .token-notice code.url { display: block; margin: 6px 0; user-select: all; }
 .ingress-card .btn-link { padding: 0; }
+
+/* Fixed-layout forms: setup from PDF, mapping, records */
+.form-from-pdf .studio-canvas, .map-canvas { height: 72vh; margin-top: 12px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg-toggle { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg-toggle button { border: 0; border-radius: 0; }
+.seg-toggle button.active { background: #eef3ff; color: var(--brand); }
+.records-scroll { overflow-x: auto; }
+.records td.cell-pending { font-style: italic; color: var(--muted); }
+.records td.cell-gap { color: var(--bad); }

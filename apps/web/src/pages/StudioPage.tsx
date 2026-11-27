@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Field } from '@lomi/core';
 import { Mapper } from '../components/studio/Mapper';
 import { QuickForm } from '../components/studio/QuickForm';
+import { FormFromPdf } from '../components/studio/FormFromPdf';
 import { call, fetchPdf, fileToBase64 } from '../lib/client';
 
 interface Version {
@@ -57,6 +58,7 @@ export const StudioPage: React.FC<{ tenant: string }> = ({ tenant }) => {
   const [error, setError] = useState<string | null>(null);
   const [creatingType, setCreatingType] = useState(false);
   const [quickForm, setQuickForm] = useState(false);
+  const [newFormMode, setNewFormMode] = useState<'pdf' | 'describe'>('pdf');
   const [newType, setNewType] = useState({ key: '', name: '' });
   const [pendingBase, setPendingBase] = useState<{ id: string; version: number } | null>(null);
   const baseRef = useRef<HTMLInputElement>(null);
@@ -208,17 +210,38 @@ export const StudioPage: React.FC<{ tenant: string }> = ({ tenant }) => {
 
       {quickForm && (
         <div className="page">
-          <QuickForm
-            tenant={tenant}
-            onCancel={() => setQuickForm(false)}
-            onBlank={() => { setQuickForm(false); setCreatingType(true); }}
-            onCreated={(key, msg) => {
-              setQuickForm(false);
-              setError(null);
-              pendingMessage.current = msg;
-              void refresh().then(() => setTypeKey(key));
-            }}
-          />
+          <div className="tabs" role="tablist" aria-label="How to set up the form">
+            <button role="tab" aria-selected={newFormMode === 'pdf'} className={newFormMode === 'pdf' ? 'active' : ''} onClick={() => setNewFormMode('pdf')}>
+              From the form's PDF — fixed layout, read by position
+            </button>
+            <button role="tab" aria-selected={newFormMode === 'describe'} className={newFormMode === 'describe' ? 'active' : ''} onClick={() => setNewFormMode('describe')}>
+              Describe the fields — layouts vary, read by Laya
+            </button>
+          </div>
+          {newFormMode === 'pdf' ? (
+            <FormFromPdf
+              tenant={tenant}
+              onCancel={() => setQuickForm(false)}
+              onCreated={(key, msg) => {
+                setQuickForm(false);
+                setError(null);
+                pendingMessage.current = msg;
+                void refresh().then(() => setTypeKey(key));
+              }}
+            />
+          ) : (
+            <QuickForm
+              tenant={tenant}
+              onCancel={() => setQuickForm(false)}
+              onBlank={() => { setQuickForm(false); setCreatingType(true); }}
+              onCreated={(key, msg) => {
+                setQuickForm(false);
+                setError(null);
+                pendingMessage.current = msg;
+                void refresh().then(() => setTypeKey(key));
+              }}
+            />
+          )}
         </div>
       )}
       {creatingType && (

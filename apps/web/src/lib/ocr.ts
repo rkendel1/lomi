@@ -9,8 +9,9 @@ function createWorkerLazy() {
     Tesseract.createWorker('eng', undefined, {
       // Keep every OCR runtime asset same-origin. Using the explicit loader
       // (rather than the *.wasm.js single-file build) makes the browser fetch
-      // and instantiate the compiled .wasm binary in public/tesseract/core.
-      corePath: `${publicRoot}/tesseract/core/tesseract-core-simd-lstm.js`,
+      // and instantiate the compiled .wasm binary. The core resolves its .wasm
+      // relative to the worker script, so both live in public/tesseract/worker.
+      corePath: `${publicRoot}/tesseract/worker/tesseract-core-simd-lstm.js`,
       workerPath: `${publicRoot}/tesseract/worker/worker.min.js`,
       langPath: `${publicRoot}/tesseract/lang`,
       gzip: true,
@@ -27,7 +28,12 @@ function createWorkerLazy() {
 let workerPromise: ReturnType<typeof createWorkerLazy> | null = null;
 
 function getOCRWorker() {
-  if (!workerPromise) workerPromise = createWorkerLazy();
+  // Forms are sparse text around ruled boxes; the default page-layout analysis
+  // drops labels printed beside boxes. PSM 11 ("sparse text") finds them.
+  if (!workerPromise) workerPromise = createWorkerLazy().then(async (worker) => {
+    await worker.setParameters({ tessedit_pageseg_mode: '11' as any });
+    return worker;
+  });
   return workerPromise;
 }
 

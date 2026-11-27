@@ -15,6 +15,8 @@ export interface ExtractedTextItem {
   width: number;
   height: number;
   eol?: boolean;
+  /** Set for the value of a fillable form field (AcroForm widget), placed at the widget. */
+  source?: 'form_field';
 }
 
 export interface ExtractedPage {
@@ -32,7 +34,23 @@ export interface ExtractedDocument {
 
 const require = createRequire(import.meta.url);
 const PDFJS_VERSION: string = require('pdfjs-dist/package.json').version;
-export const TEXT_PARSER_ID = `pdfjs-dist@${PDFJS_VERSION}/text-1`;
+// text-2: values of fillable form fields are included (after the page's text), positioned at their widget.
+export const TEXT_PARSER_ID = `pdfjs-dist@${PDFJS_VERSION}/text-2`;
+
+/** The value a fillable widget shows, or null when it shows none. */
+export function widgetValue(annotation: any): string | null {
+  const isWidget = annotation?.subtype === 'Widget' || annotation?.annotationType === 20;
+  if (!isWidget || annotation.hidden || !Array.isArray(annotation.rect)) return null;
+  const raw = annotation.fieldValue;
+  if (annotation.fieldType === 'Btn') {
+    if (annotation.pushButton) return null;
+    if (annotation.radioButton) return raw && raw === annotation.buttonValue ? String(raw) : null;
+    // Checkbox: any on-state is a mark.
+    return raw && raw !== 'Off' ? 'X' : null;
+  }
+  const value = Array.isArray(raw) ? raw.join(', ') : typeof raw === 'string' ? raw : null;
+  return value && value.trim() ? value.replace(/\s+/g, ' ').trim() : null;
+}
 
 function standardFontDataUrl(): string {
   const root = dirname(require.resolve('pdfjs-dist/package.json'));
@@ -67,6 +85,22 @@ export async function extractPdfText(bytes: Uint8Array): Promise<ExtractedDocume
           width: raw.width,
           height: raw.height || Math.abs(d),
           eol: raw.hasEOL || undefined,
+        });
+      }
+      // Filled fillable forms keep their values in widgets, not in the page text.
+      for (const annotation of await page.getAnnotations()) {
+        const value = widgetValue(annotation);
+        if (value === null) continue;
+        const [x1, y1, x2, y2] = annotation.rect as number[];
+        const height = Math.min(Math.abs(y2 - y1), 12);
+        items.push({
+          str: value,
+          x: Math.min(x1, x2) + 2,
+          y: Math.min(y1, y2) + Math.max(0, (Math.abs(y2 - y1) - height) / 2),
+          width: Math.max(1, Math.abs(x2 - x1) - 4),
+          height,
+          eol: true,
+          source: 'form_field',
         });
       }
       pages.push({ pageIndex: i - 1, width: viewport.width, height: viewport.height, items });
