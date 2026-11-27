@@ -13,6 +13,7 @@ import { approveVerified, proposeCorrection, reviewValue } from '../domain/revie
 import { basePdfFile, createDocumentType, getTemplate, listTemplates, publishTemplate, saveDraft, uploadBasePdf } from '../domain/templates';
 import { addMember, changeMemberRole, configureIngress, createTenant, ingressInfo, listMembers, listTenants, PERSON_ROLES, removeMember, resolveTenant, updateModelSettings } from '../domain/tenants';
 import { withSystem } from '../db/pool';
+import { demoStatus, startDemo } from '../seed/demo';
 import type { MembershipClaim } from './auth';
 
 export const APPLICATION_ID = 'ai.lomi.document-operations';
@@ -520,6 +521,25 @@ export function buildApplication(ctx: Ctx): AppPortApplication {
       name: 'documents.retry', description: "Retry a document whose processing failed (its current version).", permissions: ['documents.retry'], effect: 'consequential',
       input: s.object({ tenant, documentId: s.string() }), output: s.object({ jobId: s.string(), status: s.string() }),
       run: async (i, c) => retryDocument(ctx, c.actor, { tenantId: c.tenantId, documentId: i.documentId }),
+    }),
+    cap({
+      name: 'demo.load',
+      description: 'Load the demo workload: two demo customers, their forms, and ~120 documents covering every review and failure scenario, processed by the worker like any other documents. Lomi operators; demo deployments only.',
+      permissions: ['lomi.tenants.manage'], effect: 'consequential',
+      input: s.object({}), output: anyObject,
+      run: async (_i, c) => {
+        requireOperator(c);
+        if (!ctx.config.demoEnabled) throw errors.forbidden('The demo workload is disabled on this deployment (set LOMI_DEMO=1 to enable).');
+        return startDemo(ctx, c.actor) as unknown as Record<string, unknown>;
+      },
+    }),
+    cap({
+      name: 'demo.status', description: 'Progress of the demo workload run, if any, and whether it can be loaded here.', permissions: ['session.read'], effect: 'observation',
+      input: s.object({}), output: anyObject,
+      run: async (_i, c) => {
+        requireOperator(c);
+        return { enabled: ctx.config.demoEnabled, run: demoStatus() } as unknown as Record<string, unknown>;
+      },
     }),
     cap({
       name: 'operations.providers', description: 'Model provider readiness as reported by workers.', permissions: ['lomi.operations.read'], effect: 'observation',

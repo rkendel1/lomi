@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { call, can, type Me } from '../lib/client';
+import { DemoWorkload } from '../components/ops/DemoWorkload';
 
 interface Stats {
   documents: { received: number; processed: number; inProgress: number; awaitingReview: number; failedNeedsOperator: number; failedRetrying: number };
@@ -137,6 +138,18 @@ export const OperationsPage: React.FC<{
         </section>
       )}
 
+      {me.operator && (
+        <DemoWorkload
+          onProgress={() => void load()}
+          onLoaded={(slug) => {
+            void Promise.resolve(onTenantsChanged()).then(() => {
+              setScope('tenant');
+              onTenantChange(slug);
+            });
+          }}
+        />
+      )}
+
       {stats && (
         <>
           <div className="kpis">
@@ -152,11 +165,11 @@ export const OperationsPage: React.FC<{
           {stats.byTenant.length > 0 && (
             <section className="card">
               <h2>Customers needing attention</h2>
-              <table className="table">
+              <table className="table stack">
                 <thead><tr><th>Customer</th><th>Documents</th><th>Awaiting review</th><th>Need Lomi</th></tr></thead>
                 <tbody>
                   {stats.byTenant.map((t) => (
-                    <tr key={t.slug} className={t.needs_operator ? 'row-hold clickable' : 'clickable'} onClick={() => { setScope('tenant'); onTenantChange(t.slug); }}><td><a href="#/operations" onClick={(e) => e.preventDefault()}>{t.name}</a></td><td>{t.documents}</td><td>{t.awaiting_review}</td><td>{t.needs_operator}</td></tr>
+                    <tr key={t.slug} className={t.needs_operator ? 'row-hold clickable' : 'clickable'} onClick={() => { setScope('tenant'); onTenantChange(t.slug); }}><td data-label="Customer"><a href="#/operations" onClick={(e) => e.preventDefault()}>{t.name}</a></td><td data-label="Documents">{t.documents}</td><td data-label="Awaiting review">{t.awaiting_review}</td><td data-label="Need Lomi">{t.needs_operator}</td></tr>
                   ))}
                 </tbody>
               </table>
@@ -166,17 +179,17 @@ export const OperationsPage: React.FC<{
           <section className="card">
             <h2>Failures</h2>
             {failures.length === 0 ? <p className="muted">Nothing is failing.</p> : (
-              <table className="table">
+              <table className="table stack">
                 <thead><tr><th>Customer</th><th>Document</th><th>Work</th><th>Reason</th><th>Action</th><th /></tr></thead>
                 <tbody>
                   {failures.map((f) => (
                     <tr key={f.jobId}>
-                      <td>{f.tenant}</td>
-                      <td>{f.documentId ? <a href={`#/documents/${f.documentId}`}>{f.title} v{f.version}</a> : '—'}</td>
-                      <td>{f.kind === 'process_version' ? 'Processing' : 'Output generation'} · attempt {f.attempts}/{f.maxAttempts}</td>
-                      <td className="small">{f.reason}</td>
-                      <td className="small">{f.action}</td>
-                      <td>{f.retryable && (me.operator || can(me, f.tenant, 'operations.retry')) && <button onClick={() => void retry(f)}>Retry</button>}</td>
+                      <td data-label="Customer">{f.tenant}</td>
+                      <td data-label="Document">{f.documentId ? <a href={`#/documents/${f.documentId}`}>{f.title} v{f.version}</a> : '—'}</td>
+                      <td data-label="Work">{f.kind === 'process_version' ? 'Processing' : 'Output generation'} · attempt {f.attempts}/{f.maxAttempts}</td>
+                      <td data-label="Reason" className="small">{f.reason}</td>
+                      <td data-label="Action" className="small">{f.action}</td>
+                      <td data-label="">{f.retryable && (me.operator || can(me, f.tenant, 'operations.retry')) && <button onClick={() => void retry(f)}>Retry</button>}</td>
                     </tr>
                   ))}
                 </tbody>

@@ -141,7 +141,7 @@ export const DocumentsPage: React.FC<{ tenant: string; me: Me }> = ({ tenant, me
       </div>
       {error && <div className="error">{error}</div>}
       {view === 'records' && type ? <RecordsTable tenant={tenant} documentType={type} /> : (
-      <table className="doc-table">
+      <table className="doc-table stack">
         <thead>
           <tr>
             <th>Document</th>
@@ -157,7 +157,7 @@ export const DocumentsPage: React.FC<{ tenant: string; me: Me }> = ({ tenant, me
         <tbody>
           {items.map((d) => (
             <tr key={d.id} onClick={() => (window.location.hash = `/documents/${d.id}`)} className={d.status === 'failed_operator' ? 'row-hold' : d.status === 'needs_type' ? 'row-action' : ''}>
-              <td>
+              <td data-label="Document">
                 <a href={`#/documents/${d.id}`}>{d.title}</a>
                 {d.receipts.revisions > 0 && <span className="tag tag-info" title="A revised version arrived; unchanged reviews were carried over">revised · v{d.currentVersion.number}</span>}
                 {d.receipts.identicalResends > 0 && (
@@ -168,13 +168,13 @@ export const DocumentsPage: React.FC<{ tenant: string; me: Me }> = ({ tenant, me
                 {d.relatedDocuments > 0 && <span className="tag" title="Another document carries the same identifying values (e.g. vendor and invoice number). Not merged.">possible duplicate</span>}
                 {d.warning && <span className="tag tag-bad" title={d.warning}>check document type</span>}
               </td>
-              <td><TypeTag doc={d} /></td>
-              <td>v{d.currentVersion.number}</td>
-              <td>{new Date(d.submittedAt).toLocaleString()}</td>
-              <td><span className={`xs xs-${d.extractionStatus}`}>{d.extractionStatus}</span></td>
-              <td><StatusBadge status={d.status} label={d.statusLabel} /></td>
-              <td>{d.progress ? <ProgressBar progress={d.progress} /> : <span className="muted">—</span>}</td>
-              <td className={['awaiting_review', 'partially_reviewed', 'approved'].includes(d.status) ? 'next-action strong' : 'next-action'}>{d.nextAction}</td>
+              <td data-label="Type"><TypeTag doc={d} /></td>
+              <td data-label="Version">v{d.currentVersion.number}</td>
+              <td data-label="Received">{new Date(d.submittedAt).toLocaleString()}</td>
+              <td data-label="Extraction"><span className={`xs xs-${d.extractionStatus}`}>{d.extractionStatus}</span></td>
+              <td data-label="Status"><StatusBadge status={d.status} label={d.statusLabel} /></td>
+              <td data-label="Progress">{d.progress ? <ProgressBar progress={d.progress} /> : <span className="muted">—</span>}</td>
+              <td data-label="Next action" className={['awaiting_review', 'partially_reviewed', 'approved'].includes(d.status) ? 'next-action strong' : 'next-action'}>{d.nextAction}</td>
             </tr>
           ))}
           {items.length === 0 && (

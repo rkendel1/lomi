@@ -426,7 +426,7 @@ export const PDFViewer: React.FC<Props> = ({
     drawOverlay();
   }, [drawOverlay]);
 
-  const getCanvasPos = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const getCanvasPos = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const rect = overlayRef.current!.getBoundingClientRect();
     return {
       x: (e.clientX - rect.left) * (overlayRef.current!.width / rect.width),
@@ -434,8 +434,11 @@ export const PDFViewer: React.FC<Props> = ({
     };
   };
 
-  const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  // Pointer events: mouse, pen and touch all draw and select. The pointer is
+  // captured so a drag that leaves the canvas still ends cleanly.
+  const handleMouseDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (e.button !== 0) return;
+    e.currentTarget.setPointerCapture?.(e.pointerId);
     const pos = getCanvasPos(e);
 
     // Check if clicking existing field
@@ -466,7 +469,7 @@ export const PDFViewer: React.FC<Props> = ({
     setDrawing({ startX: pos.x, startY: pos.y, endX: pos.x, endY: pos.y });
   };
 
-  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const handleMouseMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!isMouseDown.current || !drawing) return;
     const pos = getCanvasPos(e);
     setDrawing((d) => d ? { ...d, endX: pos.x, endY: pos.y } : null);
@@ -546,15 +549,13 @@ export const PDFViewer: React.FC<Props> = ({
         <canvas ref={canvasRef} className="pdf-canvas" />
         <canvas
           ref={overlayRef}
-          className="pdf-overlay"
-          onMouseDown={handleMouseDown}
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
-          onMouseLeave={() => {
-            if (isMouseDown.current) {
-              isMouseDown.current = false;
-              setDrawing(null);
-            }
+          className={`pdf-overlay${readOnly ? '' : ' pdf-overlay-draw'}`}
+          onPointerDown={handleMouseDown}
+          onPointerMove={handleMouseMove}
+          onPointerUp={handleMouseUp}
+          onPointerCancel={() => {
+            isMouseDown.current = false;
+            setDrawing(null);
           }}
         />
       </div>

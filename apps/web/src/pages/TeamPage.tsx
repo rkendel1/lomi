@@ -100,14 +100,14 @@ export const TeamPage: React.FC<{ tenant: string; tenantName: string; me: Me }> 
       <section className="card">
         <h2>People ({people.length})</h2>
         {members === null ? <p className="muted">Loading…</p> : (
-          <table className="table">
+          <table className="table stack">
             <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Since</th><th /></tr></thead>
             <tbody>
               {people.map((m) => (
                 <tr key={m.principalId}>
-                  <td>{m.name.replace(/\s*\(.*\)$/, '')}{m.principalId === me.id && <span className="small muted"> (you)</span>}</td>
-                  <td className="small">{m.email}</td>
-                  <td>
+                  <td data-label="Name">{m.name.replace(/\s*\(.*\)$/, '')}{m.principalId === me.id && <span className="small muted"> (you)</span>}</td>
+                  <td data-label="Email" className="small">{m.email}</td>
+                  <td data-label="Role">
                     <select
                       aria-label={`Role of ${m.name}`}
                       value={m.role}
@@ -116,8 +116,8 @@ export const TeamPage: React.FC<{ tenant: string; tenantName: string; me: Me }> 
                       {ROLES.map((r) => <option key={r.key} value={r.key}>{r.name}</option>)}
                     </select>
                   </td>
-                  <td className="small muted">{new Date(m.addedAt).toLocaleDateString()}</td>
-                  <td>
+                  <td data-label="Since" className="small muted">{new Date(m.addedAt).toLocaleDateString()}</td>
+                  <td data-label="">
                     <button
                       className="btn-link"
                       onClick={() => {

@@ -210,7 +210,7 @@ export const StudioPage: React.FC<{ tenant: string }> = ({ tenant }) => {
 
       {quickForm && (
         <div className="page">
-          <div className="tabs" role="tablist" aria-label="How to set up the form">
+          <div className="tabs tabs-wrap" role="tablist" aria-label="How to set up the form">
             <button role="tab" aria-selected={newFormMode === 'pdf'} className={newFormMode === 'pdf' ? 'active' : ''} onClick={() => setNewFormMode('pdf')}>
               From the form's PDF — fixed layout, read by position
             </button>

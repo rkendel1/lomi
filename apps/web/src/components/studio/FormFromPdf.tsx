@@ -93,7 +93,7 @@ export const FormFromPdf: React.FC<{ tenant: string; onCreated: (key: string, me
       </div>
       {file && detected && (
         <div className="studio-canvas">
-          <Mapper key={`${file.name}:${file.size}`} embedded initialFile={file} initialFields={detected.fields} onFieldsChange={setFields} />
+          <Mapper minimal key={`${file.name}:${file.size}`} embedded initialFile={file} initialFields={detected.fields} onFieldsChange={setFields} />
         </div>
       )}
     </div>

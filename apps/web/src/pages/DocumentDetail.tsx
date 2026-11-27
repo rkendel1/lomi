@@ -435,7 +435,21 @@ const ValueCard: React.FC<{
       </div>
       {v.needsAttention && v.attentionReason && <div className="attention">{v.attentionReason}</div>}
       {v.evidence ? (
-        <blockquote className="evidence" title="Verified verbatim in the document">“{v.evidence.quote}” <span className="muted small">p.{v.evidence.page + 1}</span></blockquote>
+        <blockquote className="evidence" title="Verified verbatim in the document">
+          “{v.evidence.quote}” <span className="muted small">p.{v.evidence.page + 1}</span>
+          {/* Phones: the document is below the fields, so jump to the highlighted place. */}
+          <button
+            type="button"
+            className="btn-link only-narrow show-on-page"
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelect();
+              window.setTimeout(() => document.querySelector('.detail-viewer')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+            }}
+          >
+            Show on page ↓
+          </button>
+        </blockquote>
       ) : v.unverified?.quote ? (
         <div className="small warn-text">The model claimed “{v.unverified.quote}”, which is not in the document; the value was not accepted.</div>
       ) : null}

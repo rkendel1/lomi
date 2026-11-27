@@ -105,22 +105,22 @@ export const SubmitPage: React.FC<{ tenant: string; tenantName: string }> = ({ t
         ) : mine.length === 0 ? (
           <p className="muted">Nothing yet. Documents you send appear here with their live status.</p>
         ) : (
-          <table className="table">
+          <table className="table stack">
             <thead>
               <tr><th>Document</th><th>Type</th><th>Status</th><th>What happens next</th><th>Sent</th></tr>
             </thead>
             <tbody>
               {mine.map((d) => (
                 <tr key={d.id} className={d.status === 'needs_type' ? 'row-action' : ''}>
-                  <td>
+                  <td data-label="Document">
                     {d.title}
                     {d.currentVersion.number > 1 && <span className="small muted"> · v{d.currentVersion.number}</span>}
                     {d.receipts.identicalResends > 0 && <span className="small muted"> · re-sent ×{d.receipts.identicalResends}</span>}
                   </td>
-                  <td><TypeTag doc={d} /></td>
-                  <td><StatusBadge status={d.status} label={d.statusLabel} /></td>
-                  <td className="small">{whatNext(d)}</td>
-                  <td className="small muted">{new Date(d.submittedAt).toLocaleString()}</td>
+                  <td data-label="Type"><TypeTag doc={d} /></td>
+                  <td data-label="Status"><StatusBadge status={d.status} label={d.statusLabel} /></td>
+                  <td data-label="What happens next" className="small">{whatNext(d)}</td>
+                  <td data-label="Sent" className="small muted">{new Date(d.submittedAt).toLocaleString()}</td>
                 </tr>
               ))}
             </tbody>

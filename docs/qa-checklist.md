@@ -18,7 +18,10 @@ Status: **Done** (verified, evidence named) · **Partial** · **Not done**.
 | F8 | Extraction speed | **Note** | ~15–20 s per document on CPU (Laya). Upload itself returns in ~40 ms. |
 | F9 | Token-less `curl` | **Dev-only** | Works because `LOMI_DEV_DEFAULT_TOKEN` is set in compose. Remove for any shared deployment. |
 | F10 | Evidence highlight | **Partial** | Highlights are per text line, not per word. |
-| F11 | Document-type detection | **Not done** | Caller names the type; a wrong type produces a "check document type" warning (≥ half gaps), not a correction. |
+| F11 | Document-type detection | **Done** | Untyped documents: printed-layout match for fixed-layout forms, then Laya yes/no per published type with deterministic thresholds; unclear → `needs_type` for a person. A wrong explicit type still produces only a warning. |
+| F12 | Scanned (image-only) submissions | **Not done** | No server-side OCR; position-read fields become gaps. Proposed: liteparse-wasm adapter (`docs/evaluation-2026-11.md`). |
+| F13 | Mobile | **Done** | Every view fits a 390 px phone with no sideways scroll; lists become labelled cards; touch draws in the mapper; checked with Playwright (iPhone 13 profile). |
+| F14 | Demo workload | **Done** | Operations → *Load demo workload* (demo deployments only): two demo customers, ~140 documents covering every scenario; test `demo.test.ts`. |
 
 ## Requirements
 
@@ -57,7 +60,7 @@ Status: **Done** (verified, evidence named) · **Partial** · **Not done**.
 | Carried-over distinguishable, previous values shown | Done | badges; previous value + decision on reopened fields |
 | Polling vs streaming explained | Done | README §5 |
 | Duplicates / re-sends clearly identified | Done | list tags `re-sent ×N`, `revised · vN`, `possible duplicate`; banner; Receipts tab; API `receipts`, `receiptLog` |
-| Tests | Done | core 58, docops 19, pdf 49, web 4, api 48 (latest run in the final report) |
+| Tests | Done | core 61, docops 26, pdf 51, web 4, api 65 = 207 (Nov 2026 run, with the real Laya model) |
 | README sections (run, layout, schema, coordination, decisions, cut, 10k) | Done | `README.md` |
 
 ## Beyond the brief (requested in this project)

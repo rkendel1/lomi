@@ -158,7 +158,7 @@ export const MapIntoForm: React.FC<{
           </p>
           {added.length > 0 && <p className="small"><strong>New:</strong> {added.map((f) => f.displayLabel || f.name).join(' · ')}</p>}
           <div className="studio-canvas map-canvas">
-            <Mapper key={`${typeKey}:${candidates.length}`} embedded initialFile={file} initialFields={[...existing, ...candidates]} onFieldsChange={setFields} />
+            <Mapper minimal key={`${typeKey}:${candidates.length}`} embedded initialFile={file} initialFields={[...existing, ...candidates]} onFieldsChange={setFields} />
           </div>
         </>
       )}
