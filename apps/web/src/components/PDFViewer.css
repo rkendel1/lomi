@@ -79,3 +79,7 @@
   border-radius: 4px;
   border: 1px solid #c0d8f0;
 }
+
+/* Touch draws boxes on the mapper (no page scroll/zoom under the finger); the read-only evidence view still scrolls. */
+.pdf-overlay-draw { touch-action: none; }
+.pdf-canvas { height: auto; }

@@ -2,8 +2,9 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import type { Field } from '@lomi/core';
 import { PDFViewer } from '../components/PDFViewer';
+import { MapIntoForm } from '../components/ops/MapIntoForm';
 import { call, can, fetchPdf, type Me } from '../lib/client';
-import { ProgressCounts, StatusBadge, STATE_LABELS, type Progress } from './shared';
+import { ProgressCounts, StatusBadge, STATE_LABELS, TypeChooser, TypeTag, type Progress, type TypeInfo } from './shared';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `${import.meta.env.BASE_URL}pdf.worker.min.mjs`;
 
@@ -40,7 +41,9 @@ interface DocumentView {
   failureReason: string | null;
   warning: string | null;
   progress: Progress | null;
-  documentType: { key: string; name: string };
+  documentType: { key: string; name: string } | null;
+  typeSource: string;
+  classification: TypeInfo['classification'];
   currentVersion: { id: string; number: number };
   viewing: { versionId: string; number: number; isCurrent: boolean; processingStatus: string; templateVersion: number | null; pageCount: number | null; filename: string; sha256: string };
   versions: Array<{ id: string; number: number; filename: string; processingStatus: string; failureReason: string | null; templateVersion: number | null; receivedAt: string; processedAt: string | null; sha256: string }>;
@@ -64,6 +67,7 @@ export const DocumentDetail: React.FC<{ tenant: string; documentId: string; me: 
   const [tab, setTab] = useState<'values' | 'versions' | 'receipts' | 'history' | 'outputs'>('values');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [extending, setExtending] = useState(false);
   const [view, setView] = useState<'evidence' | 'original'>('evidence');
   const [flash, setFlash] = useState<string | null>(() => {
     try {
@@ -186,7 +190,7 @@ export const DocumentDetail: React.FC<{ tenant: string; documentId: string; me: 
           <a href="#/documents" className="back">← Documents</a>
           <h1>{doc.title}</h1>
           <p className="muted">
-            {doc.documentType.name} · version {doc.viewing.number}
+            <TypeTag doc={doc} /> · version {doc.viewing.number}
             {!doc.viewing.isCurrent && <strong className="warn-text"> (older version — read only)</strong>}
             {doc.viewing.templateVersion && ` · template v${doc.viewing.templateVersion}`}
           </p>
@@ -206,10 +210,25 @@ export const DocumentDetail: React.FC<{ tenant: string; documentId: string; me: 
               <button onClick={() => void fetchPdf(`/api/documents/${documentId}/file?output=${latestOutput.id}`, tenant, 'output.pdf').then((f) => window.open(URL.createObjectURL(f)))}>Download output</button>
             )}
             <button onClick={() => file && window.open(URL.createObjectURL(file))} disabled={!file}>Original PDF</button>
+            {me.operator && doc.documentType && doc.viewing.isCurrent && doc.viewing.processingStatus === 'processed' && (
+              <button onClick={() => setExtending((v) => !v)}>{extending ? 'Close' : 'Capture more…'}</button>
+            )}
           </div>
         </div>
       </div>
       {flash && <div className="flash" role="status">{flash}</div>}
+      {extending && doc.documentType && (
+        <MapIntoForm tenant={tenant} documentId={documentId} file={file} currentType={doc.documentType.key} onDone={() => { setExtending(false); void load(); }} />
+      )}
+      {doc.status === 'needs_type' && me.operator && (
+        <MapIntoForm tenant={tenant} documentId={documentId} file={file} classification={doc.classification as any} onDone={() => void load()} />
+      )}
+      {doc.status === 'needs_type' && !me.operator && can(me, tenant, 'documents.submit') && (
+        <section className="card card-action">
+          <h2>What kind of document is this?</h2>
+          <TypeChooser tenant={tenant} documentId={documentId} reason={doc.failureReason} scores={doc.classification?.scores} onChosen={() => void load()} />
+        </section>
+      )}
       {doc.warning && <div className="error">{doc.warning}</div>}
       {(doc.related.length > 0 || doc.receipts.identicalResends > 0 || doc.receipts.revisions > 0) && (
         <div className="dup-banner" role="note">
@@ -416,7 +435,21 @@ const ValueCard: React.FC<{
       </div>
       {v.needsAttention && v.attentionReason && <div className="attention">{v.attentionReason}</div>}
       {v.evidence ? (
-        <blockquote className="evidence" title="Verified verbatim in the document">“{v.evidence.quote}” <span className="muted small">p.{v.evidence.page + 1}</span></blockquote>
+        <blockquote className="evidence" title="Verified verbatim in the document">
+          “{v.evidence.quote}” <span className="muted small">p.{v.evidence.page + 1}</span>
+          {/* Phones: the document is below the fields, so jump to the highlighted place. */}
+          <button
+            type="button"
+            className="btn-link only-narrow show-on-page"
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelect();
+              window.setTimeout(() => document.querySelector('.detail-viewer')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+            }}
+          >
+            Show on page ↓
+          </button>
+        </blockquote>
       ) : v.unverified?.quote ? (
         <div className="small warn-text">The model claimed “{v.unverified.quote}”, which is not in the document; the value was not accepted.</div>
       ) : null}

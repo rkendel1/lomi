@@ -15,3 +15,4 @@ export * from './validation';
 export * from './carryover';
 export * from './process';
 export * from './candidates';
+export * from './region';

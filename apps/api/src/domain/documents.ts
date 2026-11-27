@@ -17,6 +17,7 @@ export type DocumentStatus =
   | 'completed'
   | 'failed_retryable'
   | 'failed_operator'
+  | 'needs_type'
   | 'superseded';
 
 export interface Progress {
@@ -43,6 +44,7 @@ const STATUS_LABELS: Record<DocumentStatus, string> = {
   completed: 'Completed',
   failed_retryable: 'Delayed — retrying automatically',
   failed_operator: 'On hold — Lomi is resolving an issue',
+  needs_type: 'Needs document type',
   superseded: 'Replaced by a newer version',
 };
 
@@ -73,6 +75,8 @@ export function nextAction(status: DocumentStatus, progress: Progress | null, fa
       return failureAction ?? 'Lomi has been notified';
     case 'failed_retryable':
       return 'None — retrying automatically';
+    case 'needs_type':
+      return failureAction ?? 'Choose the document type';
     case 'superseded':
       return 'Open the latest version';
     default:
@@ -192,12 +196,17 @@ export async function submitDocument(
     if (replay) return replay;
 
     const ingress = await resolveIngress(tx, input.tenantId);
-    const typeRow = input.documentTypeKey
-      ? (await tx.query('SELECT id FROM document_types WHERE tenant_id = $1 AND key = $2', [input.tenantId, input.documentTypeKey])).rows[0]
-      : ingress.default_document_type_id
-        ? { id: ingress.default_document_type_id }
-        : undefined;
-    if (!typeRow) throw new DomainError('INVALID_INPUT', `Unknown document type "${input.documentTypeKey ?? '(none)'}".`);
+    // The type is what the sender said, else the ingress default, else identified after parsing (Laya).
+    let typeId: string | null = null;
+    let typeSource: 'submitted' | 'ingress_default' | 'pending' = 'pending';
+    if (input.documentTypeKey) {
+      typeId = (await tx.query('SELECT id FROM document_types WHERE tenant_id = $1 AND key = $2', [input.tenantId, input.documentTypeKey])).rows[0]?.id ?? null;
+      if (!typeId) throw new DomainError('INVALID_INPUT', `Unknown document type "${input.documentTypeKey}".`);
+      typeSource = 'submitted';
+    } else if (ingress.default_document_type_id) {
+      typeId = ingress.default_document_type_id;
+      typeSource = 'ingress_default';
+    }
 
     const duplicate = await findExactDuplicate(tx, input.tenantId, sha256);
     if (duplicate) {
@@ -224,8 +233,8 @@ export async function submitDocument(
 
     const object = await storeObject(tx, ctx.store, input.tenantId, input.bytes, 'application/pdf');
     const doc = await tx.query(
-      `INSERT INTO documents (tenant_id, document_type_id, title, created_by) VALUES ($1, $2, $3, $4) RETURNING id`,
-      [input.tenantId, typeRow.id, input.title?.trim() || input.filename, actor.principalId]
+      `INSERT INTO documents (tenant_id, document_type_id, type_source, title, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+      [input.tenantId, typeId, typeSource, input.title?.trim() || input.filename, actor.principalId]
     );
     const documentId = doc.rows[0].id as string;
     const versionId = await insertVersion(tx, input.tenantId, documentId, 1, object.id, sha256, input.filename, input.bytes.length);
@@ -302,7 +311,7 @@ export async function addVersion(
     const superseded = await tx.query(
       `UPDATE document_versions SET processing_status = 'superseded', status_changed_at = now(),
          failure_reason = NULL, failure_action = NULL
-       WHERE document_id = $1 AND processing_status IN ('received', 'queued', 'parsing', 'extracting', 'validating', 'failed_retryable', 'failed_operator')
+       WHERE document_id = $1 AND processing_status IN ('received', 'queued', 'parsing', 'extracting', 'validating', 'failed_retryable', 'failed_operator', 'needs_type')
        RETURNING id, version`,
       [input.documentId]
     );
@@ -368,7 +377,9 @@ export async function documentSummary(tx: Tx, row: Record<string, any>) {
   return {
     id: row.id as string,
     title: row.title as string,
-    documentType: { key: row.type_key as string, name: row.type_name as string },
+    documentType: row.type_key ? { key: row.type_key as string, name: row.type_name as string } : null,
+    typeSource: row.type_source as string,
+    classification: (row.classification as Record<string, unknown> | null) ?? null,
     currentVersion: { id: row.current_version_id as string, number: row.version as number },
     submittedAt: (row.created_at as Date).toISOString(),
     updatedAt: (row.updated_at as Date).toISOString(),
@@ -380,7 +391,7 @@ export async function documentSummary(tx: Tx, row: Record<string, any>) {
     progress,
     warning:
       progress && progress.total > 0 && progress.gaps >= Math.ceil(progress.total / 2)
-        ? `Most fields (${progress.gaps} of ${progress.total}) were not found. This may not be a ${row.type_name as string}; check the original before reviewing.`
+        ? `Most fields (${progress.gaps} of ${progress.total}) were not found. This may not be a ${(row.type_name as string | null) ?? 'document of this type'}; check the original before reviewing.`
         : null,
     nextAction: nextAction(status, progress, row.failure_action ?? null),
     relatedDocuments: Number(row.related_count ?? 0),
@@ -389,20 +400,24 @@ export async function documentSummary(tx: Tx, row: Record<string, any>) {
 
 const SUMMARY_SELECT = `
   SELECT d.id, d.title, d.created_at, d.updated_at, d.current_version_id,
-         dt.key AS type_key, dt.name AS type_name,
+         dt.key AS type_key, dt.name AS type_name, d.type_source, d.classification,
          dv.version, dv.processing_status, dv.failure_reason, dv.failure_action,
          (SELECT count(*) FROM document_relations r WHERE r.document_id = d.id OR r.related_document_id = d.id) AS related_count
   FROM documents d
-  JOIN document_types dt ON dt.id = d.document_type_id
+  LEFT JOIN document_types dt ON dt.id = d.document_type_id
   JOIN document_versions dv ON dv.id = d.current_version_id`;
 
 export async function listDocuments(
   ctx: Ctx,
-  input: { tenantId: string; search?: string; status?: string; documentType?: string; limit?: number; offset?: number }
+  input: { tenantId: string; search?: string; status?: string; documentType?: string; submittedBy?: string | null; limit?: number; offset?: number }
 ) {
   return withTenant(ctx.db, input.tenantId, async (tx) => {
     const params: unknown[] = [input.tenantId];
     const where = ['d.tenant_id = $1'];
+    if (input.submittedBy !== undefined) {
+      params.push(input.submittedBy);
+      where.push(`d.created_by IS NOT DISTINCT FROM $${params.length}::uuid`);
+    }
     if (input.search) {
       params.push(`%${input.search}%`);
       where.push(`(d.title ILIKE $${params.length} OR dv.filename ILIKE $${params.length} OR d.business_key ILIKE $${params.length})`);
@@ -698,4 +713,141 @@ export async function nextForReview(ctx: Ctx, input: { tenantId: string; after?:
     );
     return rows[0] ? { documentId: rows[0].id as string, title: rows[0].title as string, remaining: rows[0].remaining as number } : { documentId: null, title: null, remaining: 0 };
   });
+}
+
+/**
+ * A person says which kind of document this is, when it could not be
+ * identified automatically. Processing then continues on its own.
+ */
+export async function setDocumentType(ctx: Ctx, actor: Actor, input: { tenantId: string; documentId: string; documentType: string }) {
+  const result = await withTenant(ctx.db, input.tenantId, async (tx) => {
+    const doc = (
+      await tx.query(
+        `SELECT d.id, d.current_version_id, dv.processing_status FROM documents d JOIN document_versions dv ON dv.id = d.current_version_id
+         WHERE d.id = $1 AND d.tenant_id = $2 FOR UPDATE OF d`,
+        [input.documentId, input.tenantId]
+      )
+    ).rows[0];
+    if (!doc) throw notFound('Document');
+    if (doc.processing_status !== 'needs_type') {
+      throw new DomainError('CONFLICT', 'The type can only be chosen while the document is waiting for it.');
+    }
+    const type = (
+      await tx.query(
+        `SELECT dt.id FROM document_types dt WHERE dt.tenant_id = $1 AND dt.key = $2
+           AND EXISTS (SELECT 1 FROM template_versions tv WHERE tv.document_type_id = dt.id AND tv.status = 'published')`,
+        [input.tenantId, input.documentType]
+      )
+    ).rows[0];
+    if (!type) throw new DomainError('INVALID_INPUT', `"${input.documentType}" is not a published document type.`);
+    await tx.query(`UPDATE documents SET document_type_id = $2, type_source = 'person', updated_at = now() WHERE id = $1`, [doc.id, type.id]);
+    await tx.query(
+      `UPDATE document_versions SET processing_status = 'queued', failure_reason = NULL, failure_action = NULL, status_changed_at = now() WHERE id = $1`,
+      [doc.current_version_id]
+    );
+    const jobId = await enqueueJob(tx, input.tenantId, 'process_version', doc.current_version_id);
+    await audit(tx, {
+      tenantId: input.tenantId, actor, action: 'document.type_chosen', subjectType: 'document', subjectId: doc.id,
+      detail: { documentType: input.documentType, versionId: doc.current_version_id, jobId },
+    });
+    return { documentId: doc.id as string, documentType: input.documentType, status: 'queued' };
+  });
+  ctx.dispatchNow?.();
+  return result;
+}
+
+/**
+ * The customer's normalized data for one form: one row per document (its
+ * current version), one column per field. A cell is the reviewed value when a
+ * person or policy decided it, else the value as extracted, with its state.
+ * A projection of extracted_values; nothing is stored twice.
+ */
+export async function listRecords(ctx: Ctx, input: { tenantId: string; documentType: string; limit?: number; offset?: number }) {
+  return withTenant(ctx.db, input.tenantId, async (tx) => {
+    const type = (await tx.query('SELECT id, key, name FROM document_types WHERE tenant_id = $1 AND key = $2', [input.tenantId, input.documentType])).rows[0];
+    if (!type) throw notFound('Document type');
+    const template = (
+      await tx.query(`SELECT version, definition->'fields' AS fields FROM template_versions WHERE document_type_id = $1 AND status = 'published' ORDER BY version DESC LIMIT 1`, [type.id])
+    ).rows[0];
+    const docs = (
+      await tx.query(
+        `SELECT d.id, d.title, d.created_at, dv.id AS version_id, dv.version, dv.processing_status, tv.version AS template_version
+         FROM documents d JOIN document_versions dv ON dv.id = d.current_version_id LEFT JOIN template_versions tv ON tv.id = dv.template_version_id
+         WHERE d.tenant_id = $1 AND d.document_type_id = $2 ORDER BY d.created_at DESC LIMIT $3 OFFSET $4`,
+        [input.tenantId, type.id, Math.min(input.limit ?? 200, 1000), input.offset ?? 0]
+      )
+    ).rows;
+    const values = docs.length
+      ? (
+          await tx.query(
+            `SELECT document_version_id, semantic_key, label, review_state, disposition, normalized_value, final_value
+             FROM extracted_values WHERE document_version_id = ANY($1::uuid[])`,
+            [docs.map((d) => d.version_id)]
+          )
+        ).rows
+      : [];
+    const columns: Array<{ key: string; label: string }> = ((template?.fields ?? []) as Array<{ semanticKey: string; displayLabel?: string; extraction?: unknown }>)
+      .filter((f) => f.extraction)
+      .map((f) => ({ key: f.semanticKey, label: f.displayLabel || f.semanticKey }));
+    for (const v of values) if (!columns.some((c) => c.key === v.semantic_key)) columns.push({ key: v.semantic_key, label: v.label });
+    return {
+      documentType: { key: type.key as string, name: type.name as string },
+      columns,
+      rows: docs.map((d) => ({
+        documentId: d.id as string,
+        title: d.title as string,
+        version: d.version as number,
+        templateVersion: (d.template_version as number | null) ?? null,
+        processingStatus: d.processing_status as string,
+        submittedAt: (d.created_at as Date).toISOString(),
+        values: Object.fromEntries(
+          values
+            .filter((v) => v.document_version_id === d.version_id)
+            .map((v) => {
+              const decided = v.review_state !== 'pending';
+              const state = !decided ? (v.disposition === 'gap' ? 'gap' : 'pending') : v.review_state;
+              return [v.semantic_key, { value: (decided ? v.final_value : v.normalized_value) as string | null, state }];
+            })
+        ),
+      })),
+    };
+  });
+}
+
+/**
+ * Read a document again with its form's latest published version, typically
+ * after the form was extended with elements the earlier version did not
+ * capture. The same file becomes the next version of the document (nothing is
+ * edited in place); unchanged, already-reviewed values carry over as for any
+ * revision, and only what is new or different goes back to review.
+ */
+export async function rereadDocument(ctx: Ctx, actor: Actor, input: { tenantId: string; documentId: string }) {
+  const result = await withTenant(ctx.db, input.tenantId, async (tx) => {
+    const doc = (
+      await tx.query(
+        `SELECT d.id, d.document_type_id, dv.id AS version_id, dv.version, dv.object_id, dv.sha256, dv.filename, dv.size_bytes, dv.processing_status,
+                tv.version AS read_with
+         FROM documents d JOIN document_versions dv ON dv.id = d.current_version_id LEFT JOIN template_versions tv ON tv.id = dv.template_version_id
+         WHERE d.id = $1 AND d.tenant_id = $2 FOR UPDATE OF d`,
+        [input.documentId, input.tenantId]
+      )
+    ).rows[0];
+    if (!doc) throw notFound('Document');
+    if (doc.processing_status !== 'processed') throw new DomainError('CONFLICT', 'Only a processed document can be read again.');
+    const latest = (
+      await tx.query(`SELECT version FROM template_versions WHERE document_type_id = $1 AND status = 'published' ORDER BY version DESC LIMIT 1`, [doc.document_type_id])
+    ).rows[0];
+    if (!latest || latest.version <= doc.read_with) {
+      throw new DomainError('CONFLICT', `This document was already read with the latest version of its form (v${doc.read_with}).`);
+    }
+    const next = (await tx.query('SELECT coalesce(max(version), 0) + 1 AS v FROM document_versions WHERE document_id = $1', [doc.id])).rows[0].v as number;
+    const versionId = await insertVersion(tx, input.tenantId, doc.id, next, doc.object_id, doc.sha256, doc.filename, Number(doc.size_bytes));
+    await audit(tx, {
+      tenantId: input.tenantId, actor, action: 'document.reread', subjectType: 'document', subjectId: doc.id,
+      detail: { fromVersion: doc.version, toVersion: next, versionId, readWithTemplate: doc.read_with, latestTemplate: latest.version },
+    });
+    return { documentId: doc.id as string, versionId, version: next, status: 'queued' };
+  });
+  ctx.dispatchNow?.();
+  return result;
 }

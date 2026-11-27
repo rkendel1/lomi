@@ -68,7 +68,7 @@ export interface DevUser {
   name: string;
   email: string;
   operator: boolean;
-  experience: 'operations' | 'review' | 'submission';
+  experience: 'operations' | 'admin' | 'review' | 'submission';
   token: string;
   tenants: string[];
   roles: string[];
@@ -103,13 +103,13 @@ export function can(me: Me | null, tenant: string | null, permission: string): b
   return Boolean(m?.permissions.includes(permission));
 }
 
-export type Experience = 'operations' | 'review' | 'submission';
+export type Experience = 'operations' | 'admin' | 'review' | 'submission';
 
-/** Which workspace an identity uses in a tenant: operators run Lomi, submitters send, everyone else reviews. */
+/** Which workspace an identity uses in a tenant: operators run Lomi, customer admins run their team, submitters send, everyone else reviews. */
 export function experienceOf(me: Me, tenant: string | null): Experience {
   if (me.operator) return 'operations';
   const role = me.memberships.find((m) => m.slug === tenant)?.role;
-  return role === 'submitter' ? 'submission' : 'review';
+  return role === 'submitter' ? 'submission' : role === 'customer_admin' ? 'admin' : 'review';
 }
 
 export interface IngressInfo {
@@ -129,10 +129,13 @@ export interface SubmissionResult {
   outcome?: 'new_document' | 'new_version' | 'duplicate_exact';
 }
 
-/** Submit files through the tenant's ingress URL (the same endpoint integrations use). */
-export async function submitFiles(tenant: string, files: File[], documentType: string): Promise<SubmissionResult[]> {
+/**
+ * Submit files through the tenant's ingress URL (the same endpoint integrations use).
+ * Without a document type, Lomi identifies each file's type after reading it.
+ */
+export async function submitFiles(tenant: string, files: File[], documentType?: string): Promise<SubmissionResult[]> {
   const form = new FormData();
-  form.append('documentType', documentType);
+  if (documentType) form.append('documentType', documentType);
   for (const f of files) form.append('file', f, f.name);
   const res = await fetch(`${API_BASE}/api/in/${encodeURIComponent(tenant)}/documents`, { method: 'POST', headers: authHeaders(), body: form });
   const body = await res.json().catch(() => null);

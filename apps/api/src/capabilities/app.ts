@@ -5,13 +5,15 @@ import { errors, type JsonValue, type Session } from '@appport/protocol';
 import { s } from '@appport/schema';
 import type { TemplateDefinition } from '@lomi/docops';
 import { audit, DomainError, type Actor, type Ctx } from '../domain/common';
-import { addVersion, getDocument, getProgress, listDocuments, nextForReview, originalFile, submitDocument } from '../domain/documents';
+import { addVersion, getDocument, getProgress, listDocuments, listRecords, nextForReview, originalFile, rereadDocument, setDocumentType, submitDocument } from '../domain/documents';
+import { createForm, createFormFromPdf, extendForm, REGION_FIELD_TYPES } from '../domain/forms';
 import { generatedFile, requestGeneration, verifyGenerated } from '../domain/generation';
 import { listFailures, operationalStats, providerReadiness, provenance, retryDocument, retryJob } from '../domain/operations';
 import { approveVerified, proposeCorrection, reviewValue } from '../domain/review';
 import { basePdfFile, createDocumentType, getTemplate, listTemplates, publishTemplate, saveDraft, uploadBasePdf } from '../domain/templates';
-import { configureIngress, createTenant, ingressInfo, listTenants, resolveTenant, updateModelSettings } from '../domain/tenants';
+import { addMember, changeMemberRole, configureIngress, createTenant, ingressInfo, listMembers, listTenants, PERSON_ROLES, removeMember, resolveTenant, updateModelSettings } from '../domain/tenants';
 import { withSystem } from '../db/pool';
+import { demoStatus, startDemo } from '../seed/demo';
 import type { MembershipClaim } from './auth';
 
 export const APPLICATION_ID = 'ai.lomi.document-operations';
@@ -226,6 +228,39 @@ export function buildApplication(ctx: Ctx): AppPortApplication {
       run: async ({ tenant: _t, ...rest }, c) => configureIngress(ctx, c.actor, { tenantId: c.tenantId, ...rest }),
     }),
 
+    // ── People (customer admins manage their own team) ──────────────────────
+    cap({
+      name: 'members.list', description: 'People and agents with access to the tenant, with their roles.', permissions: ['members.manage'], effect: 'observation',
+      input: s.object({ tenant }), output: list, run: async (_i, c) => ({ items: await listMembers(ctx, c.tenantId) }),
+    }),
+    cap({
+      name: 'members.add',
+      description: 'Give a person access with a role. A new person gets a sign-in token, returned once.',
+      permissions: ['members.manage'], effect: 'consequential',
+      input: s.object({ tenant, name: s.string(), email: s.string(), role: s.enum([...PERSON_ROLES]) }),
+      output: s.object({ principalId: s.string(), name: s.string(), email: s.string(), role: s.string(), signInToken: s.nullable(s.string()) }),
+      run: async ({ tenant: _t, ...rest }, c) => {
+        if (c.claims.kind !== 'user') throw errors.forbidden('Only people can grant access');
+        return addMember(ctx, c.actor, { tenantId: c.tenantId, ...rest });
+      },
+    }),
+    cap({
+      name: 'members.role.change', description: "Change a person's role in the tenant.", permissions: ['members.manage'], effect: 'consequential',
+      input: s.object({ tenant, principalId: s.string(), role: s.enum([...PERSON_ROLES]) }), output: s.object({ principalId: s.string(), role: s.string() }),
+      run: async ({ tenant: _t, ...rest }, c) => {
+        if (c.claims.kind !== 'user') throw errors.forbidden('Only people can change access');
+        return changeMemberRole(ctx, c.actor, { tenantId: c.tenantId, ...rest });
+      },
+    }),
+    cap({
+      name: 'members.remove', description: "Remove a person's access to the tenant (and agents acting for them). History is kept.", permissions: ['members.manage'], effect: 'consequential',
+      input: s.object({ tenant, principalId: s.string() }), output: s.object({ principalId: s.string(), removed: s.boolean() }),
+      run: async (i, c) => {
+        if (c.claims.kind !== 'user') throw errors.forbidden('Only people can remove access');
+        return removeMember(ctx, c.actor, { tenantId: c.tenantId, principalId: i.principalId });
+      },
+    }),
+
     // ── Templates (Schema Studio) ──────────────────────────────────────────
     cap({
       name: 'templates.list', description: 'Document types and their template versions.', permissions: ['templates.read'], effect: 'observation',
@@ -267,10 +302,40 @@ export function buildApplication(ctx: Ctx): AppPortApplication {
       input: s.object({ tenant, templateVersionId: s.string() }), output: s.object({ id: s.string(), version: s.integer(), status: s.string() }),
       run: async (i, c) => publishTemplate(ctx, c.actor, { tenantId: c.tenantId, templateVersionId: i.templateVersionId }),
     }),
+    cap({
+      name: 'templates.forms.create',
+      description: 'Quick form setup: create a document type from the list of fields to read (label, value type, plain-language instructions). Generates the output form and a template, and publishes it unless publish is false.',
+      permissions: ['lomi.templates.write', 'lomi.templates.publish'], effect: 'consequential',
+      input: s.object({
+        tenant, name: s.string(), key: s.optional(s.string()), description: s.optional(s.string()), publish: s.optional(s.boolean()),
+        fields: s.array(s.object({
+          label: s.string(), type: s.enum(['string', 'date', 'money', 'number', 'percent']), instructions: s.optional(s.string()), required: s.optional(s.boolean()), key: s.optional(s.string()),
+        })),
+      }),
+      output: anyObject,
+      run: async ({ tenant: _t, ...rest }, c) => (await createForm(ctx, c.actor, { tenantId: c.tenantId, ...rest })) as unknown as Record<string, unknown>,
+    }),
+    cap({
+      name: 'templates.forms.import',
+      description:
+        "Create a fixed-layout form from its PDF and the fields located on it (coordtool: page and box in PDF points). Incoming copies are identified by the form's printed layout and each value is read from its own box. Publishes unless publish is false.",
+      permissions: ['lomi.templates.write', 'lomi.templates.publish'], effect: 'consequential',
+      input: s.object({
+        tenant, name: s.string(), key: s.optional(s.string()), description: s.optional(s.string()), publish: s.optional(s.boolean()),
+        filename: s.string(), contentBase64: s.string(),
+        fields: s.array(s.object({
+          label: s.string(), type: s.enum([...REGION_FIELD_TYPES]), page: s.integer(), x: s.number(), y: s.number(), width: s.number(), height: s.number(),
+          key: s.optional(s.string()), sourceFieldId: s.optional(s.string()), required: s.optional(s.boolean()),
+        })),
+      }),
+      output: anyObject,
+      run: async ({ tenant: _t, contentBase64, ...rest }, c) =>
+        (await createFormFromPdf(ctx, c.actor, { tenantId: c.tenantId, ...rest, bytes: fromB64(contentBase64) })) as unknown as Record<string, unknown>,
+    }),
 
     // ── Documents ──────────────────────────────────────────────────────────
     cap({
-      name: 'documents.submit', description: 'Submit a PDF. Returns after durable acceptance; processing is asynchronous.', permissions: ['documents.submit'], effect: 'consequential', idempotent: true,
+      name: 'documents.submit', description: 'Submit a PDF. Returns after durable acceptance; processing is asynchronous. Without documentType, Lomi identifies the type after reading it.', permissions: ['documents.submit'], effect: 'consequential', idempotent: true,
       input: s.object({ tenant, filename: s.string(), contentBase64: s.string(), documentType: s.optional(s.string()), channel: s.optional(channel), title: s.optional(s.string()), idempotencyKey: s.optional(s.string()) }),
       output: submission,
       run: async (i, c) => submitDocument(ctx, c.actor, { tenantId: c.tenantId, documentTypeKey: i.documentType, filename: i.filename, bytes: fromB64(i.contentBase64), channel: i.channel ?? 'api', title: i.title, idempotencyKey: i.idempotencyKey }),
@@ -304,9 +369,56 @@ export function buildApplication(ctx: Ctx): AppPortApplication {
     }),
     cap({
       name: 'documents.list', description: 'Search and filter documents with status, progress and next action.', permissions: ['documents.read'], effect: 'observation',
-      input: s.object({ tenant, search: s.optional(s.string()), status: s.optional(s.string()), documentType: s.optional(s.string()), limit: s.optional(s.integer()), offset: s.optional(s.integer()) }),
+      input: s.object({
+        tenant, search: s.optional(s.string()), status: s.optional(s.string()), documentType: s.optional(s.string()), limit: s.optional(s.integer()), offset: s.optional(s.integer()),
+        mine: s.optional(s.boolean()),
+      }),
       output: list,
-      run: async ({ tenant: _t, ...rest }, c) => ({ items: await listDocuments(ctx, { tenantId: c.tenantId, ...rest }) }),
+      run: async ({ tenant: _t, mine, ...rest }, c) => ({
+        items: await listDocuments(ctx, { tenantId: c.tenantId, ...rest, ...(mine ? { submittedBy: c.actor.principalId } : {}) }),
+      }),
+    }),
+    cap({
+      name: 'templates.fields.add',
+      description:
+        "Extend a form's schema with elements its current version does not capture (e.g. found while mapping an unrecognized document into it): positional boxes located on the document, or described fields read by the model. Saves a new template version (published unless publish is false); earlier versions and documents are unchanged.",
+      permissions: ['lomi.templates.write', 'lomi.templates.publish'], effect: 'consequential',
+      input: s.object({
+        tenant, documentType: s.string(), documentId: s.optional(s.string()), publish: s.optional(s.boolean()),
+        regionFields: s.optional(s.array(s.object({
+          label: s.string(), type: s.enum([...REGION_FIELD_TYPES]), page: s.integer(), x: s.number(), y: s.number(), width: s.number(), height: s.number(),
+          key: s.optional(s.string()), sourceFieldId: s.optional(s.string()), required: s.optional(s.boolean()),
+        }))),
+        describedFields: s.optional(s.array(s.object({
+          label: s.string(), type: s.enum(['string', 'date', 'money', 'number', 'percent']), instructions: s.optional(s.string()), required: s.optional(s.boolean()), key: s.optional(s.string()),
+        }))),
+      }),
+      output: anyObject,
+      run: async ({ tenant: _t, ...rest }, c) => (await extendForm(ctx, c.actor, { tenantId: c.tenantId, ...rest })) as unknown as Record<string, unknown>,
+    }),
+    cap({
+      name: 'records.list',
+      description: "The customer's normalized data for one form: one row per document (current version), one column per field; each cell is the reviewed value if decided, else as extracted, with its state.",
+      permissions: ['documents.read'], effect: 'observation',
+      input: s.object({ tenant, documentType: s.string(), limit: s.optional(s.integer()), offset: s.optional(s.integer()) }),
+      output: anyObject,
+      run: async ({ tenant: _t, ...rest }, c) => (await listRecords(ctx, { tenantId: c.tenantId, ...rest })) as unknown as Record<string, unknown>,
+    }),
+    cap({
+      name: 'documents.reread',
+      description: "Read a processed document again with its form's latest published version (e.g. after elements were added). The same file becomes the next version; unchanged reviewed values carry over.",
+      permissions: ['documents.retry'], effect: 'consequential',
+      input: s.object({ tenant, documentId: s.string() }),
+      output: s.object({ documentId: s.string(), versionId: s.string(), version: s.integer(), status: s.string() }),
+      run: async (i, c) => rereadDocument(ctx, c.actor, { tenantId: c.tenantId, documentId: i.documentId }),
+    }),
+    cap({
+      name: 'documents.type.set',
+      description: 'Say which document type a submission is, when Lomi could not identify it (status needs_type). Processing then continues automatically.',
+      permissions: ['documents.submit'], effect: 'consequential',
+      input: s.object({ tenant, documentId: s.string(), documentType: s.string() }),
+      output: s.object({ documentId: s.string(), documentType: s.string(), status: s.string() }),
+      run: async (i, c) => setDocumentType(ctx, c.actor, { tenantId: c.tenantId, documentId: i.documentId, documentType: i.documentType }),
     }),
     cap({
       name: 'documents.get', description: 'A document version with extracted values, evidence, checks, decisions and history.', permissions: ['documents.read'], effect: 'observation',
@@ -409,6 +521,25 @@ export function buildApplication(ctx: Ctx): AppPortApplication {
       name: 'documents.retry', description: "Retry a document whose processing failed (its current version).", permissions: ['documents.retry'], effect: 'consequential',
       input: s.object({ tenant, documentId: s.string() }), output: s.object({ jobId: s.string(), status: s.string() }),
       run: async (i, c) => retryDocument(ctx, c.actor, { tenantId: c.tenantId, documentId: i.documentId }),
+    }),
+    cap({
+      name: 'demo.load',
+      description: 'Load the demo workload: two demo customers, their forms, and ~120 documents covering every review and failure scenario, processed by the worker like any other documents. Lomi operators; demo deployments only.',
+      permissions: ['lomi.tenants.manage'], effect: 'consequential',
+      input: s.object({}), output: anyObject,
+      run: async (_i, c) => {
+        requireOperator(c);
+        if (!ctx.config.demoEnabled) throw errors.forbidden('The demo workload is disabled on this deployment (set LOMI_DEMO=1 to enable).');
+        return startDemo(ctx, c.actor) as unknown as Record<string, unknown>;
+      },
+    }),
+    cap({
+      name: 'demo.status', description: 'Progress of the demo workload run, if any, and whether it can be loaded here.', permissions: ['session.read'], effect: 'observation',
+      input: s.object({}), output: anyObject,
+      run: async (_i, c) => {
+        requireOperator(c);
+        return { enabled: ctx.config.demoEnabled, run: demoStatus() } as unknown as Record<string, unknown>;
+      },
     }),
     cap({
       name: 'operations.providers', description: 'Model provider readiness as reported by workers.', permissions: ['lomi.operations.read'], effect: 'observation',

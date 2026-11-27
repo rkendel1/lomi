@@ -49,13 +49,19 @@ export interface MapperProps {
   subtitle?: string;
   /** Hosted inside Schema Studio: no standalone header, export or capability controls. */
   embedded?: boolean;
+  /**
+   * Only the controls an operator needs to locate elements (draw as, show
+   * fields): no grid, OCR, auto-detect, debug or preview. Used where Lomi has
+   * already run detection (new form from PDF, capture more, map into a form).
+   */
+  minimal?: boolean;
 }
 
 /**
  * coordtool's visual field mapper. Used standalone (no props) and inside
  * Schema Studio, where it edits a tenant's template version.
  */
-export function Mapper({ initialFile = null, initialFields, onFieldsChange, headerExtra, embedded = false, title = 'PDF Field Mapper', subtitle = 'Visual overlay → schema generator' }: MapperProps = {}) {
+export function Mapper({ initialFile = null, initialFields, onFieldsChange, headerExtra, embedded = false, minimal = false, title = 'PDF Field Mapper', subtitle = 'Visual overlay → schema generator' }: MapperProps = {}) {
   const [pdfFile, setPdfFile] = useState<File | null>(initialFile);
   const [totalPages, setTotalPages] = useState(1);
   const [currentPage, setCurrentPage] = useState(1);
@@ -202,6 +208,7 @@ export function Mapper({ initialFile = null, initialFields, onFieldsChange, head
                 ))}
               </select>
 
+              {!minimal && (<>
               <label className="ctrl-label">Grid:</label>
               <select
                 className="ctrl-select"
@@ -241,6 +248,7 @@ export function Mapper({ initialFile = null, initialFields, onFieldsChange, head
                 />
                 Debug
               </label>
+              </>)}
 
               <label className="ctrl-check">
                 <input
@@ -251,7 +259,7 @@ export function Mapper({ initialFile = null, initialFields, onFieldsChange, head
                 Show fields
               </label>
               
-              <div className="ctrl-view-toggle">
+              {!minimal && <div className="ctrl-view-toggle">
                 <button
                   className={`ctrl-toggle-btn ${viewMode === 'edit' ? 'active' : ''}`}
                   onClick={() => setViewMode('edit')}
@@ -264,7 +272,7 @@ export function Mapper({ initialFile = null, initialFields, onFieldsChange, head
                 >
                   👁️ Preview
                 </button>
-              </div>
+              </div>}
 
     </>
   );
@@ -355,7 +363,7 @@ export function Mapper({ initialFile = null, initialFields, onFieldsChange, head
   if (embedded) {
     // Inside Schema Studio: the host provides title and actions; only drawing controls are shown here.
     return (
-      <div className="app app-embedded">
+      <div className={`app app-embedded${minimal ? ' app-minimal' : ''}`}>
         {pdfFile && <div className="mapper-toolbar">{drawingControls}{headerExtra}</div>}
         <main className="app-body">{workspace}</main>
       </div>

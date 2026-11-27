@@ -1,12 +1,15 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { call, can, type Me } from '../lib/client';
 import { UploadPanel } from '../components/ops/UploadPanel';
-import { ProgressBar, StatusBadge } from './shared';
+import { RecordsTable } from '../components/ops/RecordsTable';
+import { ProgressBar, StatusBadge, TypeTag, type TypeInfo } from './shared';
 
 export interface DocumentSummary {
   id: string;
   title: string;
-  documentType: { key: string; name: string };
+  documentType: { key: string; name: string } | null;
+  typeSource: string;
+  classification: TypeInfo['classification'];
   currentVersion: { id: string; number: number };
   submittedAt: string;
   status: string;
@@ -27,6 +30,7 @@ const STATUS_FILTERS = [
   ['partially_reviewed', 'Review in progress'],
   ['approved', 'Approved'],
   ['completed', 'Completed'],
+  ['needs_type', 'Needs document type'],
   ['failed_operator', 'On hold'],
 ];
 
@@ -39,6 +43,7 @@ export const DocumentsPage: React.FC<{ tenant: string; me: Me }> = ({ tenant, me
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [showUpload, setShowUpload] = useState(false);
+  const [view, setView] = useState<'documents' | 'records'>('documents');
 
   const load = useCallback(async () => {
     try {
@@ -123,15 +128,20 @@ export const DocumentsPage: React.FC<{ tenant: string; me: Me }> = ({ tenant, me
             <option key={v} value={v}>{l}</option>
           ))}
         </select>
-        <select aria-label="Type filter" value={type} onChange={(e) => setType(e.target.value)}>
+        <select aria-label="Type filter" value={type} onChange={(e) => { setType(e.target.value); if (!e.target.value) setView('documents'); }}>
           <option value="">All types</option>
           {types.map((t) => (
             <option key={t.key} value={t.key}>{t.name}</option>
           ))}
         </select>
+        <div className="seg-toggle" role="tablist" aria-label="View">
+          <button role="tab" aria-selected={view === 'documents'} className={view === 'documents' ? 'active' : ''} onClick={() => setView('documents')}>Documents</button>
+          <button role="tab" aria-selected={view === 'records'} className={view === 'records' ? 'active' : ''} disabled={!type} title={type ? '' : 'Choose a form to see its records'} onClick={() => setView('records')}>Records</button>
+        </div>
       </div>
       {error && <div className="error">{error}</div>}
-      <table className="doc-table">
+      {view === 'records' && type ? <RecordsTable tenant={tenant} documentType={type} /> : (
+      <table className="doc-table stack">
         <thead>
           <tr>
             <th>Document</th>
@@ -146,8 +156,8 @@ export const DocumentsPage: React.FC<{ tenant: string; me: Me }> = ({ tenant, me
         </thead>
         <tbody>
           {items.map((d) => (
-            <tr key={d.id} onClick={() => (window.location.hash = `/documents/${d.id}`)} className={d.status === 'failed_operator' ? 'row-hold' : ''}>
-              <td>
+            <tr key={d.id} onClick={() => (window.location.hash = `/documents/${d.id}`)} className={d.status === 'failed_operator' ? 'row-hold' : d.status === 'needs_type' ? 'row-action' : ''}>
+              <td data-label="Document">
                 <a href={`#/documents/${d.id}`}>{d.title}</a>
                 {d.receipts.revisions > 0 && <span className="tag tag-info" title="A revised version arrived; unchanged reviews were carried over">revised · v{d.currentVersion.number}</span>}
                 {d.receipts.identicalResends > 0 && (
@@ -158,13 +168,13 @@ export const DocumentsPage: React.FC<{ tenant: string; me: Me }> = ({ tenant, me
                 {d.relatedDocuments > 0 && <span className="tag" title="Another document carries the same identifying values (e.g. vendor and invoice number). Not merged.">possible duplicate</span>}
                 {d.warning && <span className="tag tag-bad" title={d.warning}>check document type</span>}
               </td>
-              <td>{d.documentType.name}</td>
-              <td>v{d.currentVersion.number}</td>
-              <td>{new Date(d.submittedAt).toLocaleString()}</td>
-              <td><span className={`xs xs-${d.extractionStatus}`}>{d.extractionStatus}</span></td>
-              <td><StatusBadge status={d.status} label={d.statusLabel} /></td>
-              <td>{d.progress ? <ProgressBar progress={d.progress} /> : <span className="muted">—</span>}</td>
-              <td className={['awaiting_review', 'partially_reviewed', 'approved'].includes(d.status) ? 'next-action strong' : 'next-action'}>{d.nextAction}</td>
+              <td data-label="Type"><TypeTag doc={d} /></td>
+              <td data-label="Version">v{d.currentVersion.number}</td>
+              <td data-label="Received">{new Date(d.submittedAt).toLocaleString()}</td>
+              <td data-label="Extraction"><span className={`xs xs-${d.extractionStatus}`}>{d.extractionStatus}</span></td>
+              <td data-label="Status"><StatusBadge status={d.status} label={d.statusLabel} /></td>
+              <td data-label="Progress">{d.progress ? <ProgressBar progress={d.progress} /> : <span className="muted">—</span>}</td>
+              <td data-label="Next action" className={['awaiting_review', 'partially_reviewed', 'approved'].includes(d.status) ? 'next-action strong' : 'next-action'}>{d.nextAction}</td>
             </tr>
           ))}
           {items.length === 0 && (
@@ -174,6 +184,7 @@ export const DocumentsPage: React.FC<{ tenant: string; me: Me }> = ({ tenant, me
           )}
         </tbody>
       </table>
+      )}
     </div>
   );
 };

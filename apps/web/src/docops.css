@@ -256,3 +256,160 @@ input, select, textarea { font: inherit; border: 1px solid var(--line); border-r
 .dup-warn { color: #7a4a00; }
 .receipt-duplicate_exact { border-left: 3px solid #cbd5e1; }
 .receipt-new_version { border-left: 3px solid var(--brand); }
+
+/* Document type detection, quick forms, team, admin workspace */
+.experience-admin { border-top-color: #0f766e; }
+.shell-admin .shell-workspace { background: #134e4a; color: #ccfbf1; }
+.type-card.type-auto { border-style: dashed; }
+.type-tag .small { white-space: nowrap; }
+.row-action { background: #f3f6ff; }
+.card-action { border-color: #cdd9ff; background: #f7f9ff; }
+.needs-type-row { display: grid; gap: 4px; padding: 10px 0; border-top: 1px solid var(--line); }
+.needs-type-row:first-of-type { border-top: 0; }
+.type-chooser .form-row { align-items: end; }
+.grow { flex: 1; }
+.quick-form h2 { margin-top: 0; }
+.quick-form label.grow input { width: 100%; }
+.quick-fields input:not([type='checkbox']) { width: 100%; box-sizing: border-box; }
+.quick-fields td { vertical-align: middle; }
+.login-token { display: flex; gap: 8px; align-items: end; justify-content: center; margin: 20px auto 0; max-width: 560px; }
+.login-token label { display: grid; gap: 4px; flex: 1; font-size: 13px; }
+.token-notice code.url { display: block; margin: 6px 0; user-select: all; }
+.ingress-card .btn-link { padding: 0; }
+
+/* Fixed-layout forms: setup from PDF, mapping, records */
+.form-from-pdf .studio-canvas, .map-canvas { margin-top: 12px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+/* Embedded mappers size to the viewport, not to a clipped frame. */
+.form-from-pdf .studio-canvas .workspace, .map-canvas .workspace { height: min(78vh, 900px); }
+.map-into-form > .form-row:last-of-type { margin-top: 12px; }
+.seg-toggle { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg-toggle button { border: 0; border-radius: 0; }
+.seg-toggle button.active { background: #eef3ff; color: var(--brand); }
+.records-scroll { overflow-x: auto; }
+.records td.cell-pending { font-style: italic; color: var(--muted); }
+.records td.cell-gap { color: var(--bad); }
+
+/* ── Accessibility: visible keyboard focus everywhere ───────────────────── */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible { outline: 3px solid #7aa2ff; outline-offset: 2px; }
+
+/* ── Phones and small tablets ────────────────────────────────────────────── */
+@media (max-width: 760px) {
+  /* Header: brand + account on the first row, the workspace nav as its own swipeable row. */
+  .shell-header { flex-wrap: wrap; gap: 6px 10px; padding: 8px 12px; position: sticky; top: 0; z-index: 50; }
+  .shell-right { gap: 8px; min-width: 0; }
+  .shell-tenant > span, .shell-user { display: none; }
+  .shell-tenant select { max-width: 46vw; min-height: 36px; }
+  .shell-tenant-name { font-size: 13px; color: #c9d1e3; max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .shell-header .btn-link { min-height: 36px; padding: 0 4px; }
+  .shell-nav { order: 3; width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+  .shell-nav a { white-space: nowrap; padding: 10px 12px; }
+
+  /* Pages: one column, comfortable gutters, nothing wider than the screen. */
+  .page { padding: 12px; }
+  .page-head { flex-direction: column; align-items: stretch; gap: 10px; }
+  .page-head h1 { font-size: 20px; overflow-wrap: anywhere; }
+  .head-actions { flex-wrap: wrap; }
+  .card { padding: 12px; }
+  .scope-select { width: 100%; }
+  .scope-select select { min-width: 0; flex: 1; }
+
+  /* Touch targets ≥ 44 px; 16 px inputs so iOS does not zoom on focus. */
+  button, select, input:not([type='checkbox']):not([type='radio']):not([type='file']) { min-height: 44px; }
+  input, select, textarea { font-size: 16px; }
+  .btn-link { min-height: 0; }
+  .form-row { gap: 10px; }
+  .form-row > label:not(.check), .form-row > input, .form-row > select { flex: 1 1 100%; }
+  .form-row > label:not(.check) input, .form-row > label:not(.check) select { width: 100%; box-sizing: border-box; }
+  .filters { flex-wrap: wrap; }
+  .filters input[type='search'] { flex: 1 1 100%; max-width: none; }
+  .filters select { flex: 1 1 40%; }
+  .seg-toggle { flex: 1 1 100%; }
+  .seg-toggle button { flex: 1; }
+
+  /* Lists people act on become labelled cards. */
+  table.stack, table.stack tbody, table.stack tr, table.stack td { display: block; }
+  table.stack thead { display: none; }
+  table.stack { border: none; background: none; }
+  table.stack tr { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; margin-bottom: 8px; }
+  table.stack td { border: none; padding: 5px 0; display: flex; justify-content: space-between; align-items: center; gap: 12px; text-align: right; }
+  table.stack td::before { content: attr(data-label); color: var(--muted); font-size: 12px; text-align: left; flex: none; }
+  table.stack td[data-label=''], table.stack td[data-label='']::before { justify-content: flex-end; content: none; }
+  table.stack td:first-child { font-size: 15px; font-weight: 600; justify-content: flex-start; text-align: left; }
+  table.stack td:first-child::before { display: none; }
+  table.stack td.empty { justify-content: center; }
+  table.stack .progress { min-width: 0; flex: 1; max-width: 60%; }
+  table.stack .tag { margin-left: 4px; }
+  .card table.stack tr { border-color: var(--line); }
+
+  /* Analytic tables (records, corrections, providers, versions) scroll inside their card. */
+  .table:not(.stack), .records-scroll { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .table:not(.stack) th, .table:not(.stack) td { white-space: nowrap; }
+
+  /* Document detail: review first, the document below at screen width. */
+  .detail .head-status { text-align: left; justify-items: start; }
+  .detail-body { grid-template-columns: minmax(0, 1fr); }
+  .detail-side { order: -1; }
+  .detail-viewer { position: static; max-height: none; overflow-x: auto; }
+  .values { max-height: none; overflow: visible; padding-right: 0; }
+  .tabs { overflow-x: auto; scrollbar-width: none; }
+  .tabs button { white-space: nowrap; flex: none; }
+  .review input { flex: 1 1 100%; }
+  .review button { flex: 1; }
+  .dup-banner { font-size: 13px; }
+
+  /* Submission */
+  .submit-grid { grid-template-columns: minmax(0, 1fr); }
+  .upload-step { gap: 8px; }
+  .type-card { min-width: 0; flex: 1 1 100%; }
+  .dropzone { padding: 18px 12px; }
+  code.url { overflow-wrap: anywhere; }
+  .needs-type-row .form-row button { flex: 1 1 100%; }
+
+  /* Operations */
+  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .kpi strong { font-size: 20px; }
+
+  /* Sign-in */
+  .login { padding: 24px 12px; }
+  .login-token { flex-direction: column; align-items: stretch; }
+
+  /* Schema Studio and the mapper: panels stack; the PDF fits the screen; drawing works by touch. */
+  .studio-bar { padding: 8px 12px; }
+  .studio-actions { flex-wrap: wrap; width: 100%; }
+  .studio-actions button { flex: 1 1 auto; }
+  .studio-crumbs select { max-width: 100%; }
+  .studio-tabs, .page .tabs { flex-wrap: nowrap; }
+  .workspace { flex-direction: column; height: auto; overflow: visible; }
+  .sidebar, .editor-sidebar { width: auto; min-width: 0; border: none; border-bottom: 1px solid #dde5f0; max-height: 40vh; }
+  .viewer-wrap { min-width: 0; overflow-x: auto; }
+  .app-body { overflow: visible; }
+  .form-from-pdf .studio-canvas .workspace, .map-canvas .workspace { height: auto; }
+  .mapper-toolbar { padding: 6px 10px; gap: 8px; }
+  .app-minimal .editor-sidebar:has(.editor-empty) { display: none; }
+  .quick-fields, .quick-fields tbody, .quick-fields tr, .quick-fields td { display: block; }
+  .quick-fields thead { display: none; }
+  .quick-fields tr { border-bottom: 1px solid var(--line); padding: 8px 0; }
+  .quick-fields td { padding: 3px 0; border: none; }
+}
+.only-narrow { display: none; }
+@media (max-width: 760px) {
+  .only-narrow { display: inline-flex; }
+  .show-on-page { margin-left: 8px; font-size: 13px; min-height: 32px; align-items: center; }
+  .shell-brand { flex: 0 1 auto; }
+  .shell-workspace { font-size: 10px; }
+  .shell-right { margin-left: auto; flex: 0 1 auto; }
+  .shell-tenant select { max-width: 40vw; }
+  .shell-tenant-name { max-width: 34vw; }
+}
+@media (max-width: 760px) {
+  .shell-tenant select { max-width: 32vw; }
+  .shell-tenant-name { max-width: 30vw; }
+  .tabs.tabs-wrap button { white-space: normal; flex: 1 1 0; text-align: left; }
+}
+@media (max-width: 760px) {
+  .shell-logo { display: none; }
+  .shell-workspace { padding: 1px 6px; }
+}
+.demo-steps { margin: 8px 0; padding-left: 18px; display: grid; gap: 2px; max-height: 220px; overflow: auto; }
+.demo-guide summary { cursor: pointer; font-size: 13px; color: var(--brand); }
+.demo-guide ul { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 3px; }

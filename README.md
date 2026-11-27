@@ -28,12 +28,17 @@ the UI is at <http://localhost:3000>.
 
 **Click first: Lomi Operations → Olivia Ops** (the internal platform operator).
 You see every customer, processing health and failures, and **Schema Studio**,
-where document types and their fields are configured. Then sign out and try:
+where document types and their fields are configured. To onboard a customer:
+**Add a customer** (type the name; the short name/intake URL is derived) →
+**add its first form** (Schema Studio → *New form*: name, what it is, the fields
+to read — published in one step) → **Team** (add its admin, reviewers,
+submitters). Then sign out and try:
 
 | Workspace | Identity | Try |
 | --- | --- | --- |
+| Customer admin | Avery Admin (Lakeside) | **Team**: add people with a role (a new person gets a sign-in token, shown once); **Operations** for their own company; model authorization |
 | Customer review | Riley Reviewer (Lakeside) | **Start reviewing** → each value beside its quote; Original vs Evidence; *Approve all verified*; the next document opens by itself |
-| Document submission | Pat Payables (Lakeside) | the customer's intake URL `/in/lakeside`: single or bulk upload, live status |
+| Document submission | Pat Payables (Lakeside) | the customer's intake URL `/in/lakeside`: drop any mix of PDFs without saying what they are — Lomi identifies each (Laya); everything they sent, with live status; unclear files ask them to choose |
 | Customer review | Sam Reviewer (Summit) | a second customer — sees none of Lakeside's data |
 
 **Re-extraction**: approve the Meridian invoice, then upload
@@ -137,6 +142,45 @@ When something fails:
 
 ## 5. Open decisions, what I chose, and why
 
+- **Fixed-layout forms are an ETL layer for ingress, built on coordtool.** A
+  form is set up from its own PDF (Schema Studio → *New form* → *From the
+  form's PDF*): coordtool locates every field on every page (fillable widgets
+  exactly; printed boxes from the rendered page, labelled from its text, or
+  OCR for scans), the operator corrects them in the mapper, and the template
+  stores each element's page and box. Incoming copies are **identified by
+  layout** (the form's printed labels at their positions, ≥ 80 % in place; no
+  model), **extracted by position** (`region`: the text inside each box,
+  including values typed into fillable fields; printed hints like
+  "MM/DD/YYYY" ignored), **normalized** by type, and land in the customer's
+  **records** for that form (one row per document, one column per element;
+  `records.list`, Documents → Records, CSV). Laya remains the fallback for
+  identification and the reader for forms whose layout varies.
+- **Unrecognized documents are mapped into existing forms, and forms grow.**
+  An operator maps a document Lomi could not identify into a form (nearest
+  layout first); coordtool shows which boxes the form does not read yet, and
+  adding them saves a new template version (`templates.fields.add`). The
+  document is then processed with it. An already processed document can be
+  read again with the extended version (`documents.reread`): the same file
+  becomes its next version, unchanged reviewed values carry over, only new
+  elements need review. Earlier versions and their data never change, and
+  element keys are stable, so the records keep one column per element.
+  Limits: moving existing boxes for a re-designed layout is not supported
+  (that is a new layout, not an extension); the server has no OCR, so scanned
+  *submissions* are not read by position (setup from a scan works).
+- **Identifying what was sent.** A submission may omit its type. After parsing,
+  the worker asks Laya one yes/no question per published type ("Is this
+  document a lease (a rental agreement…), a document that states tenant name,
+  monthly rent…?") over the start of the document. The choice is deterministic:
+  the best type must score ≥ 0.6 and beat the next by ≥ 0.3; otherwise the
+  document waits as **Needs document type** and the sender or a reviewer picks
+  (`documents.type.set`), after which processing continues by itself. One
+  published type, an explicit type, or an intake default skip the model. How the
+  type was decided (`typeSource`, scores, model call) is stored with the
+  document. With the real model all four fixture files are identified (margins
+  ≥ 0.77); a market report sent to a customer with only invoice/lease forms is
+  held, not forced. Known limit: a type can be chosen only while the document is
+  waiting for one; a wrongly identified, already-processed document has to be
+  re-sent.
 - **Which model extracts.** I chose the model type, not just a vendor. Sending
   documents to a vision or large generative model is costly, and most values
   can be verified deterministically once you know which passage they came from.

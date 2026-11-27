@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { call, can, type Me } from '../lib/client';
+import { DemoWorkload } from '../components/ops/DemoWorkload';
 
 interface Stats {
   documents: { received: number; processed: number; inProgress: number; awaitingReview: number; failedNeedsOperator: number; failedRetrying: number };
@@ -11,6 +12,9 @@ interface Stats {
   byTenant: Array<{ slug: string; name: string; documents: number; needs_operator: number; awaiting_review: number }>;
 }
 
+const SLUG = /^[a-z0-9][a-z0-9-]{1,62}$/;
+const slugify = (name: string) => name.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 63);
+
 const secs = (s: number | null) => (s === null ? '—' : s < 90 ? `${Math.round(s)} s` : s < 5400 ? `${Math.round(s / 60)} min` : `${(s / 3600).toFixed(1)} h`);
 
 /** Operational visibility for Lomi operators (all customers) and customer admins (their own). */
@@ -19,7 +23,7 @@ export const OperationsPage: React.FC<{
   tenants: Array<{ slug: string; name: string }>;
   me: Me;
   onTenantChange: (slug: string) => void;
-  onTenantsChanged: () => void;
+  onTenantsChanged: () => Promise<void> | void;
 }> = ({ tenant, tenants, me, onTenantChange, onTenantsChanged }) => {
   const [scope, setScope] = useState<'tenant' | 'all'>(me.operator ? 'all' : 'tenant');
   const [stats, setStats] = useState<Stats | null>(null);
@@ -27,7 +31,9 @@ export const OperationsPage: React.FC<{
   const [providers, setProviders] = useState<any[]>([]);
   const [models, setModels] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
-  const [newTenant, setNewTenant] = useState({ slug: '', name: '' });
+  const [newTenant, setNewTenant] = useState({ slug: '', name: '', slugEdited: false });
+  const [created, setCreated] = useState<{ slug: string; name: string } | null>(null);
+  const [creating, setCreating] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -44,6 +50,24 @@ export const OperationsPage: React.FC<{
   }, [scope, tenant, me.operator]);
 
   useEffect(() => void load(), [load]);
+
+  const createCustomer = async () => {
+    setCreating(true);
+    setError(null);
+    try {
+      const t = await call<{ slug: string; name: string }>('tenants.create', { slug: newTenant.slug.trim(), name: newTenant.name.trim() });
+      setNewTenant({ slug: '', name: '', slugEdited: false });
+      await onTenantsChanged();
+      // Switch to the new customer so the next steps (forms, people) apply to it.
+      setScope('tenant');
+      onTenantChange(t.slug);
+      setCreated(t);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setCreating(false);
+    }
+  };
 
   const retry = async (f: any) => {
     try {
@@ -93,21 +117,37 @@ export const OperationsPage: React.FC<{
       </div>
       {error && <div className="error">{error}</div>}
       {me.operator && (
-          <section className="card">
-            <h2>Add a customer</h2>
-            <form
-              className="form-row"
-              onSubmit={(e) => {
-                e.preventDefault();
-                void call('tenants.create', newTenant).then(() => { setNewTenant({ slug: '', name: '' }); onTenantsChanged(); }, (err) => setError(err.message));
-              }}
-            >
-              <label>Short name<input aria-label="Tenant slug" value={newTenant.slug} placeholder="acme" onChange={(e) => setNewTenant({ ...newTenant, slug: e.target.value })} /></label>
-              <label>Name<input aria-label="Tenant name" value={newTenant.name} placeholder="Acme Corp" onChange={(e) => setNewTenant({ ...newTenant, name: e.target.value })} /></label>
-              <button className="btn-primary" type="submit">Create customer</button>
-            </form>
-            <p className="small muted">Each customer gets its own intake URL (/in/&lt;short name&gt;) for API, single and bulk submissions. Then set up its document types in Schema Studio.</p>
-          </section>
+        <section className="card">
+          <h2>Add a customer</h2>
+          <form className="form-row" onSubmit={(e) => { e.preventDefault(); void createCustomer(); }}>
+            <label>Name<input aria-label="Tenant name" value={newTenant.name} placeholder="Acme Corp" onChange={(e) => setNewTenant({ ...newTenant, name: e.target.value, slug: newTenant.slugEdited ? newTenant.slug : slugify(e.target.value) })} /></label>
+            <label>Short name (intake URL)<input aria-label="Tenant slug" value={newTenant.slug} placeholder="acme-corp" onChange={(e) => setNewTenant({ ...newTenant, slug: e.target.value, slugEdited: true })} /></label>
+            <button className="btn-primary" type="submit" disabled={creating || !newTenant.name.trim() || !SLUG.test(newTenant.slug)}>{creating ? 'Creating…' : 'Create customer'}</button>
+          </form>
+          <p className="small muted">
+            {newTenant.slug && !SLUG.test(newTenant.slug)
+              ? <span className="warn-text">Short name: 2–63 lowercase letters, digits or hyphens.</span>
+              : <>Intake URL: <code>{window.location.origin}/in/{newTenant.slug || '<short name>'}</code>. API, single and bulk submissions all go there.</>}
+          </p>
+          {created && (
+            <div className="notice">
+              <strong>{created.name} is ready.</strong> Next: <a href="#/studio">add its first form</a> (what to read from its documents), then{' '}
+              <a href="#/team">add its people</a> (an admin, reviewers, submitters).
+            </div>
+          )}
+        </section>
+      )}
+
+      {me.operator && (
+        <DemoWorkload
+          onProgress={() => void load()}
+          onLoaded={(slug) => {
+            void Promise.resolve(onTenantsChanged()).then(() => {
+              setScope('tenant');
+              onTenantChange(slug);
+            });
+          }}
+        />
       )}
 
       {stats && (
@@ -125,11 +165,11 @@ export const OperationsPage: React.FC<{
           {stats.byTenant.length > 0 && (
             <section className="card">
               <h2>Customers needing attention</h2>
-              <table className="table">
+              <table className="table stack">
                 <thead><tr><th>Customer</th><th>Documents</th><th>Awaiting review</th><th>Need Lomi</th></tr></thead>
                 <tbody>
                   {stats.byTenant.map((t) => (
-                    <tr key={t.slug} className={t.needs_operator ? 'row-hold clickable' : 'clickable'} onClick={() => { setScope('tenant'); onTenantChange(t.slug); }}><td><a href="#/operations" onClick={(e) => e.preventDefault()}>{t.name}</a></td><td>{t.documents}</td><td>{t.awaiting_review}</td><td>{t.needs_operator}</td></tr>
+                    <tr key={t.slug} className={t.needs_operator ? 'row-hold clickable' : 'clickable'} onClick={() => { setScope('tenant'); onTenantChange(t.slug); }}><td data-label="Customer"><a href="#/operations" onClick={(e) => e.preventDefault()}>{t.name}</a></td><td data-label="Documents">{t.documents}</td><td data-label="Awaiting review">{t.awaiting_review}</td><td data-label="Need Lomi">{t.needs_operator}</td></tr>
                   ))}
                 </tbody>
               </table>
@@ -139,17 +179,17 @@ export const OperationsPage: React.FC<{
           <section className="card">
             <h2>Failures</h2>
             {failures.length === 0 ? <p className="muted">Nothing is failing.</p> : (
-              <table className="table">
+              <table className="table stack">
                 <thead><tr><th>Customer</th><th>Document</th><th>Work</th><th>Reason</th><th>Action</th><th /></tr></thead>
                 <tbody>
                   {failures.map((f) => (
                     <tr key={f.jobId}>
-                      <td>{f.tenant}</td>
-                      <td>{f.documentId ? <a href={`#/documents/${f.documentId}`}>{f.title} v{f.version}</a> : '—'}</td>
-                      <td>{f.kind === 'process_version' ? 'Processing' : 'Output generation'} · attempt {f.attempts}/{f.maxAttempts}</td>
-                      <td className="small">{f.reason}</td>
-                      <td className="small">{f.action}</td>
-                      <td>{f.retryable && (me.operator || can(me, f.tenant, 'operations.retry')) && <button onClick={() => void retry(f)}>Retry</button>}</td>
+                      <td data-label="Customer">{f.tenant}</td>
+                      <td data-label="Document">{f.documentId ? <a href={`#/documents/${f.documentId}`}>{f.title} v{f.version}</a> : '—'}</td>
+                      <td data-label="Work">{f.kind === 'process_version' ? 'Processing' : 'Output generation'} · attempt {f.attempts}/{f.maxAttempts}</td>
+                      <td data-label="Reason" className="small">{f.reason}</td>
+                      <td data-label="Action" className="small">{f.action}</td>
+                      <td data-label="">{f.retryable && (me.operator || can(me, f.tenant, 'operations.retry')) && <button onClick={() => void retry(f)}>Retry</button>}</td>
                     </tr>
                   ))}
                 </tbody>

@@ -1,6 +1,7 @@
 import type { Field } from '@lomi/core';
 import { indexPageText, verifyQuote } from './text';
 import { normalizeValue, valueSupportedByQuote } from './values';
+import { extractByRegion } from './region';
 import type {
   ExtractionOutcome,
   ExtractionProvider,
@@ -119,6 +120,11 @@ export async function runExtraction(
         confidenceSource: 'deterministic_match',
       })
     );
+  }
+
+  // Fixed-layout forms: read each field from its own box. No model involved.
+  for (const field of fields.filter((f) => f.extraction?.method === 'region')) {
+    results.set(field.semanticKey, extractByRegion(document, field));
   }
 
   const llmFields = fields.filter((f) => f.extraction?.method === 'llm');

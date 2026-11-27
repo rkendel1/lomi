@@ -1,9 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { call, submitFiles, type IngressInfo, type SubmissionResult } from '../../lib/client';
 
+/** Picks "identify automatically" (Lomi reads each file and decides with Laya). */
+const AUTO = '';
+
 /**
- * Upload one or many PDFs to a customer's ingress URL. Choosing a document type
- * shows what Lomi will read from it, so the choice is visible and deliberate.
+ * Upload one or many PDFs to a customer's ingress URL. By default Lomi
+ * identifies each file's type after reading it, so a mixed batch needs no
+ * sorting; a sender who knows the type can still say so.
  */
 export const UploadPanel: React.FC<{ tenant: string; onSubmitted: (results: SubmissionResult[]) => void; compact?: boolean }> = ({ tenant, onSubmitted, compact }) => {
   const [info, setInfo] = useState<IngressInfo | null>(null);
@@ -18,7 +22,8 @@ export const UploadPanel: React.FC<{ tenant: string; onSubmitted: (results: Subm
     void call<IngressInfo>('ingress.get', { tenant })
       .then((i) => {
         setInfo(i);
-        setType(i.defaultDocumentType ?? i.documentTypes[0]?.key ?? '');
+        // An intake default means "everything sent here is X"; otherwise identify each file.
+        setType(i.defaultDocumentType ?? (i.documentTypes.length === 1 ? i.documentTypes[0].key : AUTO));
       })
       .catch((e) => setError(e.message));
   }, [tenant]);
@@ -32,11 +37,11 @@ export const UploadPanel: React.FC<{ tenant: string; onSubmitted: (results: Subm
   };
 
   const submit = async () => {
-    if (!files.length || !type) return;
+    if (!files.length) return;
     setBusy(true);
     setError(null);
     try {
-      const results = await submitFiles(tenant, files, type);
+      const results = await submitFiles(tenant, files, type || undefined);
       setFiles([]);
       onSubmitted(results);
     } catch (e) {
@@ -52,6 +57,13 @@ export const UploadPanel: React.FC<{ tenant: string; onSubmitted: (results: Subm
       <div className="upload-step">
         <span className="step">1</span>
         <div className="upload-types" role="radiogroup" aria-label="Document type">
+          {info && info.documentTypes.length > 1 && (
+            <button role="radio" aria-checked={type === AUTO} className={`type-card type-auto${type === AUTO ? ' chosen' : ''}`} onClick={() => setType(AUTO)}>
+              <strong>Identify automatically</strong>
+              <span className="small muted">Lomi reads each file and works out what it is</span>
+            </button>
+          )}
+          {info?.documentTypes.length === 0 && <p className="small muted">No forms are set up for this customer yet; documents sent now wait until one is.</p>}
           {info?.documentTypes.map((t) => (
             <button key={t.key} role="radio" aria-checked={t.key === type} className={`type-card${t.key === type ? ' chosen' : ''}`} onClick={() => setType(t.key)}>
               <strong>{t.name}</strong>
@@ -60,10 +72,16 @@ export const UploadPanel: React.FC<{ tenant: string; onSubmitted: (results: Subm
           ))}
         </div>
       </div>
-      {chosen && (
+      {chosen ? (
         <p className="type-fields small">
           Lomi will read: {chosen.fields.join(' · ')}
         </p>
+      ) : (
+        info && info.documentTypes.length > 1 && (
+          <p className="type-fields small">
+            Each file is matched to one of: {info.documentTypes.map((t) => t.name).join(' · ')}. If it is unclear, you will be asked to choose.
+          </p>
+        )
       )}
       <div className="upload-step">
         <span className="step">2</span>
@@ -94,8 +112,10 @@ export const UploadPanel: React.FC<{ tenant: string; onSubmitted: (results: Subm
       </div>
       <div className="upload-step">
         <span className="step">3</span>
-        <button className="btn-primary" disabled={!files.length || !type || busy} onClick={() => void submit()}>
-          {busy ? 'Submitting…' : files.length > 1 ? `Submit ${files.length} documents as ${chosen?.name ?? '…'}` : `Submit as ${chosen?.name ?? '…'}`}
+        <button className="btn-primary" disabled={!files.length || busy} onClick={() => void submit()}>
+          {busy
+            ? 'Submitting…'
+            : `Submit ${files.length > 1 ? `${files.length} documents` : files.length === 1 ? '1 document' : ''}${chosen ? ` as ${chosen.name}` : ''}`.replace(/\s+$/, '') || 'Submit'}
         </button>
         <span className="small muted">Processing starts immediately.</span>
       </div>

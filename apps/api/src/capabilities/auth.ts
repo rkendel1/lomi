@@ -6,7 +6,7 @@ import { hashToken } from '../domain/tenants';
 export const ROLE_PERMISSIONS: Record<string, string[]> = {
   customer_admin: [
     'documents.read', 'documents.submit', 'documents.generate', 'documents.retry', 'reviews.decide', 'reviews.propose',
-    'templates.read', 'provenance.read', 'operations.read', 'operations.retry', 'models.read', 'models.authorize',
+    'templates.read', 'provenance.read', 'operations.read', 'operations.retry', 'models.read', 'models.authorize', 'members.manage',
   ],
   reviewer: ['documents.read', 'documents.submit', 'documents.generate', 'documents.retry', 'reviews.decide', 'reviews.propose', 'templates.read', 'provenance.read'],
   viewer: ['documents.read', 'templates.read', 'provenance.read'],

@@ -16,6 +16,8 @@ export interface Config {
   extractionProvider: string | undefined;
   semanticProvider: string | undefined;
   devLogin: boolean;
+  /** Operators may load the demo workload (demo customers and ~120 documents). Never in production. */
+  demoEnabled: boolean;
   workerId: string;
   leaseSeconds: number;
   /** Development only: identity used for REST calls that send no token (so curl examples work). */
@@ -37,6 +39,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     extractionProvider: env.LOMI_EXTRACTION_PROVIDER || undefined,
     semanticProvider: env.LOMI_SEMANTIC_PROVIDER || undefined,
     devLogin: env.LOMI_DEV_LOGIN === '1',
+    demoEnabled: env.LOMI_DEMO === '1' || (env.LOMI_DEMO !== '0' && env.LOMI_DEV_LOGIN === '1'),
     workerId: env.WORKER_ID ?? `worker-${process.pid}`,
     leaseSeconds: Number(env.JOB_LEASE_SECONDS ?? 60),
     devDefaultToken: env.LOMI_DEV_DEFAULT_TOKEN || undefined,

@@ -14,6 +14,8 @@ export interface TextItem {
   height: number;
   /** PDF.js reports an explicit end-of-line after this item. */
   eol?: boolean;
+  /** Where the text came from: the page content (default) or a fillable form field's value. */
+  source?: 'form_field';
 }
 
 export interface ParsedPage {
@@ -63,6 +65,13 @@ export interface TemplateDefinition {
     pageOffsets?: Record<number, PageOffset>;
     overflowStrategy?: 'truncate' | 'shrink' | 'continue';
   };
+  /** Fixed-layout forms: printed text that identifies this form by position (see `layoutMatch`). */
+  layout?: LayoutFingerprint;
+}
+
+/** Printed text at known positions on a fixed-layout form. */
+export interface LayoutFingerprint {
+  anchors: Array<{ page: number; text: string; x: number; y: number }>;
 }
 
 export interface EvidenceBox {
@@ -147,7 +156,7 @@ export interface ExtractionProvider {
 
 export interface FieldExtraction {
   semanticKey: string;
-  method: 'pattern' | 'llm';
+  method: 'pattern' | 'llm' | 'region';
   /** Raw value as found; null when the field is a gap. */
   value: string | null;
   /** Canonical form used for comparison and output (ISO dates, plain decimals). */
