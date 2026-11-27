@@ -6,6 +6,7 @@ import { DocumentDetail } from './pages/DocumentDetail';
 import { OperationsPage } from './pages/OperationsPage';
 import { StudioPage } from './pages/StudioPage';
 import { SubmitPage } from './pages/SubmitPage';
+import { TeamPage } from './pages/TeamPage';
 import './docops.css';
 
 type Route =
@@ -13,7 +14,8 @@ type Route =
   | { page: 'document'; id: string }
   | { page: 'operations' }
   | { page: 'studio' }
-  | { page: 'submit' };
+  | { page: 'submit' }
+  | { page: 'team' };
 
 function parseRoute(hash: string): Route | null {
   const doc = hash.match(/^#\/documents\/([0-9a-f-]{36})/);
@@ -22,6 +24,7 @@ function parseRoute(hash: string): Route | null {
   if (hash.startsWith('#/operations')) return { page: 'operations' };
   if (hash.startsWith('#/studio')) return { page: 'studio' };
   if (hash.startsWith('#/submit')) return { page: 'submit' };
+  if (hash.startsWith('#/team')) return { page: 'team' };
   return null;
 }
 
@@ -104,9 +107,15 @@ function App() {
   const showOps = me.operator || can(me, tenant, 'operations.read');
   const canReview = experience !== 'submission';
   const canSubmit = can(me, tenant, 'documents.submit');
+  const canManageTeam = can(me, tenant, 'members.manage');
   // Default landing page per workspace.
   const effective: Route =
-    route ?? (tenantFromPath() || experience === 'submission' ? { page: 'submit' } : experience === 'operations' ? { page: 'operations' } : { page: 'documents' });
+    route ??
+    (tenantFromPath() || experience === 'submission'
+      ? { page: 'submit' }
+      : experience === 'operations' || experience === 'admin'
+        ? { page: 'operations' }
+        : { page: 'documents' });
   const tenantName = tenants.find((t) => t.slug === tenant)?.name ?? tenant;
   const isActive = (...pages: Route['page'][]) => (pages.includes(effective.page) ? 'active' : '');
 
@@ -117,7 +126,7 @@ function App() {
           <span className="shell-logo" aria-hidden>◧</span>
           <span>Lomi</span>
           <span className="shell-workspace">
-            {experience === 'operations' ? 'Operations' : experience === 'submission' ? 'Submission' : 'Review'}
+            {experience === 'operations' ? 'Operations' : experience === 'admin' ? 'Admin' : experience === 'submission' ? 'Submission' : 'Review'}
           </span>
         </div>
         <nav className="shell-nav" aria-label="Main">
@@ -126,6 +135,7 @@ function App() {
           {!me.operator && showOps && <a href="#/operations" className={isActive('operations')}>Operations</a>}
           {canSubmit && !me.operator && <a href="#/submit" className={isActive('submit')}>Submit</a>}
           {me.operator && <a href="#/studio" className={isActive('studio')}>Schema Studio</a>}
+          {canManageTeam && <a href="#/team" className={isActive('team')}>Team</a>}
         </nav>
         <div className="shell-right">
           {tenants.length > 1 ? (
@@ -159,6 +169,8 @@ function App() {
           />
         ) : effective.page === 'studio' && me.operator ? (
           <StudioPage key={tenant} tenant={tenant} />
+        ) : effective.page === 'team' && canManageTeam ? (
+          <TeamPage key={tenant} tenant={tenant} tenantName={tenantName ?? tenant} me={me} />
         ) : effective.page === 'submit' || !canReview ? (
           canSubmit ? <SubmitPage key={tenant} tenant={tenant} tenantName={tenantName ?? tenant} /> : <div className="empty">This identity cannot submit documents.</div>
         ) : (

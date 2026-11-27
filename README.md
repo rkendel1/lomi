@@ -28,12 +28,17 @@ the UI is at <http://localhost:3000>.
 
 **Click first: Lomi Operations → Olivia Ops** (the internal platform operator).
 You see every customer, processing health and failures, and **Schema Studio**,
-where document types and their fields are configured. Then sign out and try:
+where document types and their fields are configured. To onboard a customer:
+**Add a customer** (type the name; the short name/intake URL is derived) →
+**add its first form** (Schema Studio → *New form*: name, what it is, the fields
+to read — published in one step) → **Team** (add its admin, reviewers,
+submitters). Then sign out and try:
 
 | Workspace | Identity | Try |
 | --- | --- | --- |
+| Customer admin | Avery Admin (Lakeside) | **Team**: add people with a role (a new person gets a sign-in token, shown once); **Operations** for their own company; model authorization |
 | Customer review | Riley Reviewer (Lakeside) | **Start reviewing** → each value beside its quote; Original vs Evidence; *Approve all verified*; the next document opens by itself |
-| Document submission | Pat Payables (Lakeside) | the customer's intake URL `/in/lakeside`: single or bulk upload, live status |
+| Document submission | Pat Payables (Lakeside) | the customer's intake URL `/in/lakeside`: drop any mix of PDFs without saying what they are — Lomi identifies each (Laya); everything they sent, with live status; unclear files ask them to choose |
 | Customer review | Sam Reviewer (Summit) | a second customer — sees none of Lakeside's data |
 
 **Re-extraction**: approve the Meridian invoice, then upload
@@ -137,6 +142,20 @@ When something fails:
 
 ## 5. Open decisions, what I chose, and why
 
+- **Identifying what was sent.** A submission may omit its type. After parsing,
+  the worker asks Laya one yes/no question per published type ("Is this
+  document a lease (a rental agreement…), a document that states tenant name,
+  monthly rent…?") over the start of the document. The choice is deterministic:
+  the best type must score ≥ 0.6 and beat the next by ≥ 0.3; otherwise the
+  document waits as **Needs document type** and the sender or a reviewer picks
+  (`documents.type.set`), after which processing continues by itself. One
+  published type, an explicit type, or an intake default skip the model. How the
+  type was decided (`typeSource`, scores, model call) is stored with the
+  document. With the real model all four fixture files are identified (margins
+  ≥ 0.77); a market report sent to a customer with only invoice/lease forms is
+  held, not forced. Known limit: a type can be chosen only while the document is
+  waiting for one; a wrongly identified, already-processed document has to be
+  re-sent.
 - **Which model extracts.** I chose the model type, not just a vendor. Sending
   documents to a vision or large generative model is costly, and most values
   can be verified deterministically once you know which passage they came from.

@@ -9,6 +9,12 @@ const EXPERIENCES: Array<{ key: DevUser['experience']; title: string; icon: stri
     description: 'Run customer workflows: configure templates in Schema Studio, watch processing health, resolve failures, manage customers.',
   },
   {
+    key: 'admin',
+    title: 'Customer admin',
+    icon: '◎',
+    description: "Run your company's side: add people and set their roles, follow processing and failures, authorize model use — and review or submit when needed.",
+  },
+  {
     key: 'review',
     title: 'Customer review',
     icon: '✓',
@@ -25,6 +31,7 @@ const EXPERIENCES: Array<{ key: DevUser['experience']; title: string; icon: stri
 /** Choose a workspace, then an identity. Demo identities are offered only in development mode. */
 export const Login: React.FC<{ onToken: (token: string) => void }> = ({ onToken }) => {
   const [users, setUsers] = useState<DevUser[] | null>(null);
+  const [token, setToken] = useState('');
 
   useEffect(() => {
     void devUsers().then(setUsers);
@@ -62,6 +69,13 @@ export const Login: React.FC<{ onToken: (token: string) => void }> = ({ onToken 
         {users !== null && users.length === 0 && (
           <p className="login-note">Sign-in is provided by your organization. Demo identities are only available when the server runs with LOMI_DEV_LOGIN=1.</p>
         )}
+        <form className="login-token" onSubmit={(e) => { e.preventDefault(); if (token.trim()) onToken(token.trim()); }}>
+          <label>
+            Have a sign-in token from your admin?
+            <input aria-label="Sign-in token" type="password" autoComplete="off" value={token} placeholder="lomi_…" onChange={(e) => setToken(e.target.value)} />
+          </label>
+          <button className="btn-primary" type="submit" disabled={!token.trim()}>Sign in</button>
+        </form>
         <p className="login-note">Integrations and agents do not sign in here: they call the API with their own token — see <a href="/api/docs">API reference</a>.</p>
       </div>
     </div>

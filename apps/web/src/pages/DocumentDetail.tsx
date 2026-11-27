@@ -3,7 +3,7 @@ import * as pdfjsLib from 'pdfjs-dist';
 import type { Field } from '@lomi/core';
 import { PDFViewer } from '../components/PDFViewer';
 import { call, can, fetchPdf, type Me } from '../lib/client';
-import { ProgressCounts, StatusBadge, STATE_LABELS, type Progress } from './shared';
+import { ProgressCounts, StatusBadge, STATE_LABELS, TypeChooser, TypeTag, type Progress, type TypeInfo } from './shared';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `${import.meta.env.BASE_URL}pdf.worker.min.mjs`;
 
@@ -40,7 +40,9 @@ interface DocumentView {
   failureReason: string | null;
   warning: string | null;
   progress: Progress | null;
-  documentType: { key: string; name: string };
+  documentType: { key: string; name: string } | null;
+  typeSource: string;
+  classification: TypeInfo['classification'];
   currentVersion: { id: string; number: number };
   viewing: { versionId: string; number: number; isCurrent: boolean; processingStatus: string; templateVersion: number | null; pageCount: number | null; filename: string; sha256: string };
   versions: Array<{ id: string; number: number; filename: string; processingStatus: string; failureReason: string | null; templateVersion: number | null; receivedAt: string; processedAt: string | null; sha256: string }>;
@@ -186,7 +188,7 @@ export const DocumentDetail: React.FC<{ tenant: string; documentId: string; me: 
           <a href="#/documents" className="back">← Documents</a>
           <h1>{doc.title}</h1>
           <p className="muted">
-            {doc.documentType.name} · version {doc.viewing.number}
+            <TypeTag doc={doc} /> · version {doc.viewing.number}
             {!doc.viewing.isCurrent && <strong className="warn-text"> (older version — read only)</strong>}
             {doc.viewing.templateVersion && ` · template v${doc.viewing.templateVersion}`}
           </p>
@@ -210,6 +212,12 @@ export const DocumentDetail: React.FC<{ tenant: string; documentId: string; me: 
         </div>
       </div>
       {flash && <div className="flash" role="status">{flash}</div>}
+      {doc.status === 'needs_type' && can(me, tenant, 'documents.submit') && (
+        <section className="card card-action">
+          <h2>What kind of document is this?</h2>
+          <TypeChooser tenant={tenant} documentId={documentId} reason={doc.failureReason} scores={doc.classification?.scores} onChosen={() => void load()} />
+        </section>
+      )}
       {doc.warning && <div className="error">{doc.warning}</div>}
       {(doc.related.length > 0 || doc.receipts.identicalResends > 0 || doc.receipts.revisions > 0) && (
         <div className="dup-banner" role="note">

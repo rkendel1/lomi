@@ -12,6 +12,7 @@ import {
 } from '@lomi/docops';
 import { extractPdfText } from '@lomi/pdf/text';
 import { withTenant, type Tx } from '../db/pool';
+import type { ClassificationResult, TypeCandidate } from '../llm/layaClassification';
 import { selectProviders } from '../llm/providers';
 import { completeJob, failJob, holdsLease, type ClaimedJob } from '../jobs/lifecycle';
 import { loadObject } from '../storage/objectStore';
@@ -38,8 +39,9 @@ async function setStage(ctx: Ctx, tenantId: string, versionId: string, stage: st
 }
 
 interface VersionContext {
-  version: { id: string; document_id: string; version: number; object_id: string; processing_status: string; document_type_id: string };
-  template: { id: string; version: number; definition: TemplateDefinition };
+  version: { id: string; document_id: string; version: number; object_id: string; processing_status: string; document_type_id: string | null };
+  /** Null while the document's type is still to be identified. */
+  template: { id: string; version: number; definition: TemplateDefinition } | null;
   baseline: { id: string; version: number } | null;
   tenantSettings: Record<string, unknown>;
   bytes: Uint8Array;
@@ -59,19 +61,7 @@ async function loadContext(ctx: Ctx, job: ClaimedJob): Promise<VersionContext | 
       )
     ).rows[0];
     if (!version || version.processing_status === 'superseded' || version.processing_status === 'processed') return null;
-    const template = (
-      await tx.query(
-        `SELECT tv.id, tv.version, tv.definition, dt.key FROM template_versions tv JOIN document_types dt ON dt.id = tv.document_type_id
-         WHERE tv.document_type_id = $1 AND tv.status = 'published' ORDER BY tv.version DESC LIMIT 1`,
-        [version.document_type_id]
-      )
-    ).rows[0];
-    if (!template) {
-      throw new PermanentProcessingError(
-        'No published template exists for this document type.',
-        'Publish a template for this document type in Schema Studio, then retry.'
-      );
-    }
+    const template = version.document_type_id ? await publishedTemplate(tx, version.document_type_id) : null;
     const baseline =
       (
         await tx.query(
@@ -84,6 +74,101 @@ async function loadContext(ctx: Ctx, job: ClaimedJob): Promise<VersionContext | 
     const bytes = await loadObject(tx, ctx.store, version.object_id);
     return { version, template, baseline, tenantSettings: tenant?.settings ?? {}, bytes };
   });
+}
+
+async function publishedTemplate(tx: Tx, documentTypeId: string): Promise<NonNullable<VersionContext['template']>> {
+  const template = (
+    await tx.query(
+      `SELECT tv.id, tv.version, tv.definition FROM template_versions tv
+       WHERE tv.document_type_id = $1 AND tv.status = 'published' ORDER BY tv.version DESC LIMIT 1`,
+      [documentTypeId]
+    )
+  ).rows[0];
+  if (!template) {
+    throw new PermanentProcessingError(
+      'No published template exists for this document type.',
+      'Publish a template for this document type in Schema Studio, then retry.'
+    );
+  }
+  return template;
+}
+
+/** The customer's published types, as the classifier sees them. */
+async function typeCandidates(tx: Tx): Promise<Array<TypeCandidate & { id: string }>> {
+  const { rows } = await tx.query(
+    `SELECT DISTINCT ON (dt.id) dt.id, dt.key, dt.name, dt.description, tv.definition->'fields' AS fields
+     FROM document_types dt JOIN template_versions tv ON tv.document_type_id = dt.id AND tv.status = 'published'
+     ORDER BY dt.id, tv.version DESC`
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    key: r.key,
+    name: r.name,
+    description: r.description,
+    fields: ((r.fields ?? []) as Array<{ displayLabel?: string; semanticKey: string; extraction?: unknown }>)
+      .filter((f) => f.extraction)
+      .map((f) => f.displayLabel || f.semanticKey),
+  }));
+}
+
+/**
+ * Identify the type of a document submitted without one. Laya scores each of
+ * the customer's published types; the choice is deterministic (`decideType`).
+ * Unclear, or no classifier available: the document waits for a person
+ * (`needs_type`) instead of being processed as a guess.
+ */
+async function identifyType(
+  ctx: Ctx,
+  job: ClaimedJob,
+  context: VersionContext,
+  parsed: ParsedDocument
+): Promise<{ kind: 'identified'; typeId: string } | { kind: 'needs_type'; reason: string }> {
+  const candidates = await withTenant(ctx.db, job.tenantId, (tx) => typeCandidates(tx));
+  const record = async (classification: Record<string, unknown>, typeId: string | null, call?: ClassificationResult, source = 'detected') =>
+    withTenant(ctx.db, job.tenantId, async (tx) => {
+      if (call) {
+        await tx.query(
+          `INSERT INTO model_calls (tenant_id, document_version_id, job_id, purpose, provider, model, prompt_version, prompt, raw_response)
+           VALUES ($1,$2,$3,'classification',$4,$5,$6,$7,$8)`,
+          [job.tenantId, context.version.id, job.id, 'laya', call.model, call.promptVersion, call.prompt, call.rawResponse]
+        );
+      }
+      await tx.query(
+        `UPDATE documents SET document_type_id = $2, type_source = CASE WHEN $2::uuid IS NULL THEN 'pending' ELSE $4 END,
+           classification = $3, updated_at = now() WHERE id = $1 AND document_type_id IS NULL`,
+        [context.version.document_id, typeId, JSON.stringify(classification), source]
+      );
+      await audit(tx, {
+        tenantId: job.tenantId, actor: SYSTEM, action: typeId ? 'document.type_detected' : 'document.type_unclear',
+        subjectType: 'document', subjectId: context.version.document_id, detail: { versionId: context.version.id, ...classification },
+      });
+    });
+
+  if (candidates.length === 0) {
+    const reason = 'This customer has no published document types yet.';
+    await record({ at: new Date().toISOString(), reason }, null);
+    return { kind: 'needs_type', reason };
+  }
+  if (candidates.length === 1) {
+    // Nothing to decide; no model call.
+    await record({ at: new Date().toISOString(), reason: 'Only one document type is published.', typeKey: candidates[0].key }, candidates[0].id, undefined, 'only_type');
+    return { kind: 'identified', typeId: candidates[0].id };
+  }
+  const classifier = ctx.providers.classifier;
+  const readiness = classifier ? await classifier.readiness() : { ready: false, detail: 'Laya is not enabled on this worker' };
+  if (!classifier || !readiness.ready) {
+    const reason = `Automatic identification is unavailable (${readiness.detail}).`;
+    await record({ at: new Date().toISOString(), reason }, null);
+    return { kind: 'needs_type', reason };
+  }
+  const result = await classifier.classify(parsed, candidates);
+  const chosen = candidates.find((c) => c.key === result.typeKey) ?? null;
+  await record(
+    { at: new Date().toISOString(), provider: classifier.name, model: result.model, typeKey: result.typeKey, scores: result.scores, reason: result.reason },
+    chosen?.id ?? null,
+    result
+  );
+  return chosen ? { kind: 'identified', typeId: chosen.id } : { kind: 'needs_type', reason: result.reason };
 }
 
 async function priorStates(tx: Tx, baselineId: string): Promise<Map<string, PriorFieldState>> {
@@ -224,7 +309,27 @@ export async function processVersion(ctx: Ctx, job: ClaimedJob): Promise<'succee
       tx.query('UPDATE document_versions SET parsed_text = $2, parser = $3, page_count = $4 WHERE id = $1', [versionId, JSON.stringify(parsed.pages), parsed.parser, parsed.pageCount])
     );
 
-    const definition = context.template.definition;
+    if (!context.template) {
+      const identified = await identifyType(ctx, job, context, parsed);
+      if (identified.kind === 'needs_type') {
+        // Not a failure: the job did its work, and a person now chooses the type (documents.type.set re-queues it).
+        return await withTenant(ctx.db, job.tenantId, async (tx) => {
+          if (!(await holdsLease(tx, job))) return 'failed';
+          await tx.query(
+            `UPDATE document_versions SET processing_status = 'needs_type', status_changed_at = now(), failure_reason = $2,
+               failure_action = 'Choose which kind of document this is; it is then processed automatically.'
+             WHERE id = $1 AND processing_status <> 'superseded'`,
+            [versionId, identified.reason]
+          );
+          await completeJob(tx, job, 'succeeded');
+          return 'succeeded';
+        });
+      }
+      context.version.document_type_id = identified.typeId;
+      context.template = await withTenant(ctx.db, job.tenantId, (tx) => publishedTemplate(tx, identified.typeId));
+    }
+    const template = context.template;
+    const definition = template.definition;
     const needs = {
       extraction: extractableFields(definition).some((f) => f.extraction?.method === 'llm'),
       semantic: definition.fields.some((f) => (f.validationRules ?? []).some((r) => r.kind === 'semantic')),
@@ -253,12 +358,12 @@ export async function processVersion(ctx: Ctx, job: ClaimedJob): Promise<'succee
           [job.tenantId, versionId, job.id, call.purpose, call.provider, call.model, call.promptVersion, call.prompt, call.rawResponse]
         );
       }
-      await detectSameTransaction(tx, job.tenantId, context.version.document_id, context.version.document_type_id, definition, processed.fields);
+      await detectSameTransaction(tx, job.tenantId, context.version.document_id, context.version.document_type_id!, definition, processed.fields);
       await tx.query(
         `UPDATE document_versions SET processing_status = 'processed', status_changed_at = now(), processed_at = now(),
            template_version_id = $2, baseline_version_id = $3, model_selection = $4, failure_reason = NULL, failure_action = NULL
          WHERE id = $1`,
-        [versionId, context.template.id, context.baseline?.id ?? null, JSON.stringify({ notes: selection.notes, fallback: selection.fallbackUsed })]
+        [versionId, template.id, context.baseline?.id ?? null, JSON.stringify({ notes: selection.notes, fallback: selection.fallbackUsed })]
       );
       await completeJob(tx, job, 'succeeded');
       await audit(tx, {
@@ -270,7 +375,7 @@ export async function processVersion(ctx: Ctx, job: ClaimedJob): Promise<'succee
         detail: {
           versionId,
           version: context.version.version,
-          templateVersion: context.template.version,
+          templateVersion: template.version,
           baselineVersion: context.baseline?.version ?? null,
           fields: processed.fields.length,
           gaps: processed.fields.filter((f) => f.disposition === 'gap').length,

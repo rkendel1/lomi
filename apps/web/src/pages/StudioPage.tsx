@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Field } from '@lomi/core';
 import { Mapper } from '../components/studio/Mapper';
+import { QuickForm } from '../components/studio/QuickForm';
 import { call, fetchPdf, fileToBase64 } from '../lib/client';
 
 interface Version {
@@ -55,9 +56,12 @@ export const StudioPage: React.FC<{ tenant: string }> = ({ tenant }) => {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creatingType, setCreatingType] = useState(false);
+  const [quickForm, setQuickForm] = useState(false);
   const [newType, setNewType] = useState({ key: '', name: '' });
   const [pendingBase, setPendingBase] = useState<{ id: string; version: number } | null>(null);
   const baseRef = useRef<HTMLInputElement>(null);
+  /** A message to show once the newly selected type has opened (switching types clears messages). */
+  const pendingMessage = useRef<string | null>(null);
 
   const refresh = useCallback(async () => {
     const r = await call<{ items: TemplateType[] }>('templates.list', { tenant });
@@ -80,13 +84,20 @@ export const StudioPage: React.FC<{ tenant: string }> = ({ tenant }) => {
   );
 
   useEffect(() => {
-    void refresh().then((items) => setTypeKey((k) => k ?? items[0]?.key ?? null)).catch((e) => setError(e.message));
+    void refresh()
+      .then((items) => {
+        setTypeKey((k) => k ?? items[0]?.key ?? null);
+        // A customer with no forms yet: start with the quick setup.
+        if (items.length === 0) setQuickForm(true);
+      })
+      .catch((e) => setError(e.message));
   }, [refresh]);
 
   const current = types.find((t) => t.key === typeKey) ?? null;
   useEffect(() => {
     setLoaded(null);
-    setMessage(null);
+    setMessage(pendingMessage.current);
+    pendingMessage.current = null;
     if (current?.versions[0]) void open(current.versions[0].id).catch((e) => setError(e.message));
   }, [current?.key]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -162,11 +173,12 @@ export const StudioPage: React.FC<{ tenant: string }> = ({ tenant }) => {
         <div className="studio-crumbs">
           <span className="crumb-root">Schema Studio</span>
           <span className="crumb-sep">›</span>
-          <select aria-label="Document type" value={typeKey ?? ''} onChange={(e) => (e.target.value === '+' ? setCreatingType(true) : setTypeKey(e.target.value))}>
+          <select aria-label="Document type" value={typeKey ?? ''} onChange={(e) => (e.target.value === '+' ? setQuickForm(true) : setTypeKey(e.target.value))}>
+            {types.length === 0 && <option value="">No forms yet</option>}
             {types.map((t) => (
               <option key={t.key} value={t.key}>{t.name}</option>
             ))}
-            <option value="+">+ New document type…</option>
+            <option value="+">+ New form…</option>
           </select>
           {current && current.versions.length > 0 && (
             <>
@@ -182,6 +194,7 @@ export const StudioPage: React.FC<{ tenant: string }> = ({ tenant }) => {
           {dirty && <span className="pill pill-dirty">Unsaved changes</span>}
         </div>
         <div className="studio-actions">
+          <button onClick={() => { setQuickForm(true); setCreatingType(false); }}>+ New form</button>
           <input ref={baseRef} type="file" accept="application/pdf" hidden aria-label="Base PDF" onChange={(e) => { if (e.target.files?.[0]) void uploadBase(e.target.files[0]); e.target.value = ''; }} />
           {current && <button onClick={() => baseRef.current?.click()}>{loaded ? 'Replace base PDF' : 'Upload base PDF'}</button>}
           {loaded && (
@@ -193,6 +206,21 @@ export const StudioPage: React.FC<{ tenant: string }> = ({ tenant }) => {
         </div>
       </div>
 
+      {quickForm && (
+        <div className="page">
+          <QuickForm
+            tenant={tenant}
+            onCancel={() => setQuickForm(false)}
+            onBlank={() => { setQuickForm(false); setCreatingType(true); }}
+            onCreated={(key, msg) => {
+              setQuickForm(false);
+              setError(null);
+              pendingMessage.current = msg;
+              void refresh().then(() => setTypeKey(key));
+            }}
+          />
+        </div>
+      )}
       {creatingType && (
         <form className="studio-newtype" onSubmit={(e) => { e.preventDefault(); void createType(); }}>
           <strong>New document type</strong>
@@ -205,8 +233,12 @@ export const StudioPage: React.FC<{ tenant: string }> = ({ tenant }) => {
       {message && <div className="notice studio-msg">{message}</div>}
       {error && <div className="error studio-msg">{error}</div>}
 
-      {!current ? (
-        <div className="empty">Create a document type to start.</div>
+      {quickForm ? null : !current ? (
+        <div className="empty studio-empty">
+          <h2>No forms yet for this customer</h2>
+          <p className="muted">A form says what kind of document this customer sends and what to read from it.</p>
+          <button className="btn-primary" onClick={() => setQuickForm(true)}>+ New form</button>
+        </div>
       ) : !loaded ? (
         <div className="empty studio-empty">
           <h2>{current.name} has no template yet</h2>

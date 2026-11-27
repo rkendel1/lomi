@@ -517,4 +517,21 @@ ALTER TABLE ingress_endpoints ADD CONSTRAINT ingress_endpoints_kind_check CHECK 
 CREATE UNIQUE INDEX ingress_one_active_per_tenant ON ingress_endpoints (tenant_id) WHERE enabled;
 `,
   },
+  {
+    id: '003_document_type_detection',
+    sql: `
+-- A document may arrive without a type. The worker then identifies it (Laya) after
+-- parsing, or holds it as 'needs_type' for a person to choose. How the type was
+-- decided is kept on the document; the model call itself is in model_calls.
+ALTER TABLE documents ALTER COLUMN document_type_id DROP NOT NULL;
+ALTER TABLE documents ADD COLUMN type_source text NOT NULL DEFAULT 'submitted'
+  CHECK (type_source IN ('submitted', 'ingress_default', 'only_type', 'detected', 'person', 'pending'));
+ALTER TABLE documents ADD COLUMN classification jsonb;
+ALTER TABLE documents ADD CONSTRAINT documents_typed CHECK (document_type_id IS NOT NULL OR type_source = 'pending');
+
+ALTER TABLE document_versions DROP CONSTRAINT document_versions_processing_status_check;
+ALTER TABLE document_versions ADD CONSTRAINT document_versions_processing_status_check CHECK (processing_status IN
+  ('received', 'queued', 'parsing', 'extracting', 'validating', 'processed', 'superseded', 'failed_retryable', 'failed_operator', 'needs_type'));
+`,
+  },
 ];

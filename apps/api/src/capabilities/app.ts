@@ -5,12 +5,13 @@ import { errors, type JsonValue, type Session } from '@appport/protocol';
 import { s } from '@appport/schema';
 import type { TemplateDefinition } from '@lomi/docops';
 import { audit, DomainError, type Actor, type Ctx } from '../domain/common';
-import { addVersion, getDocument, getProgress, listDocuments, nextForReview, originalFile, submitDocument } from '../domain/documents';
+import { addVersion, getDocument, getProgress, listDocuments, nextForReview, originalFile, setDocumentType, submitDocument } from '../domain/documents';
+import { createForm } from '../domain/forms';
 import { generatedFile, requestGeneration, verifyGenerated } from '../domain/generation';
 import { listFailures, operationalStats, providerReadiness, provenance, retryDocument, retryJob } from '../domain/operations';
 import { approveVerified, proposeCorrection, reviewValue } from '../domain/review';
 import { basePdfFile, createDocumentType, getTemplate, listTemplates, publishTemplate, saveDraft, uploadBasePdf } from '../domain/templates';
-import { configureIngress, createTenant, ingressInfo, listTenants, resolveTenant, updateModelSettings } from '../domain/tenants';
+import { addMember, changeMemberRole, configureIngress, createTenant, ingressInfo, listMembers, listTenants, PERSON_ROLES, removeMember, resolveTenant, updateModelSettings } from '../domain/tenants';
 import { withSystem } from '../db/pool';
 import type { MembershipClaim } from './auth';
 
@@ -226,6 +227,39 @@ export function buildApplication(ctx: Ctx): AppPortApplication {
       run: async ({ tenant: _t, ...rest }, c) => configureIngress(ctx, c.actor, { tenantId: c.tenantId, ...rest }),
     }),
 
+    // ── People (customer admins manage their own team) ──────────────────────
+    cap({
+      name: 'members.list', description: 'People and agents with access to the tenant, with their roles.', permissions: ['members.manage'], effect: 'observation',
+      input: s.object({ tenant }), output: list, run: async (_i, c) => ({ items: await listMembers(ctx, c.tenantId) }),
+    }),
+    cap({
+      name: 'members.add',
+      description: 'Give a person access with a role. A new person gets a sign-in token, returned once.',
+      permissions: ['members.manage'], effect: 'consequential',
+      input: s.object({ tenant, name: s.string(), email: s.string(), role: s.enum([...PERSON_ROLES]) }),
+      output: s.object({ principalId: s.string(), name: s.string(), email: s.string(), role: s.string(), signInToken: s.nullable(s.string()) }),
+      run: async ({ tenant: _t, ...rest }, c) => {
+        if (c.claims.kind !== 'user') throw errors.forbidden('Only people can grant access');
+        return addMember(ctx, c.actor, { tenantId: c.tenantId, ...rest });
+      },
+    }),
+    cap({
+      name: 'members.role.change', description: "Change a person's role in the tenant.", permissions: ['members.manage'], effect: 'consequential',
+      input: s.object({ tenant, principalId: s.string(), role: s.enum([...PERSON_ROLES]) }), output: s.object({ principalId: s.string(), role: s.string() }),
+      run: async ({ tenant: _t, ...rest }, c) => {
+        if (c.claims.kind !== 'user') throw errors.forbidden('Only people can change access');
+        return changeMemberRole(ctx, c.actor, { tenantId: c.tenantId, ...rest });
+      },
+    }),
+    cap({
+      name: 'members.remove', description: "Remove a person's access to the tenant (and agents acting for them). History is kept.", permissions: ['members.manage'], effect: 'consequential',
+      input: s.object({ tenant, principalId: s.string() }), output: s.object({ principalId: s.string(), removed: s.boolean() }),
+      run: async (i, c) => {
+        if (c.claims.kind !== 'user') throw errors.forbidden('Only people can remove access');
+        return removeMember(ctx, c.actor, { tenantId: c.tenantId, principalId: i.principalId });
+      },
+    }),
+
     // ── Templates (Schema Studio) ──────────────────────────────────────────
     cap({
       name: 'templates.list', description: 'Document types and their template versions.', permissions: ['templates.read'], effect: 'observation',
@@ -267,10 +301,23 @@ export function buildApplication(ctx: Ctx): AppPortApplication {
       input: s.object({ tenant, templateVersionId: s.string() }), output: s.object({ id: s.string(), version: s.integer(), status: s.string() }),
       run: async (i, c) => publishTemplate(ctx, c.actor, { tenantId: c.tenantId, templateVersionId: i.templateVersionId }),
     }),
+    cap({
+      name: 'templates.forms.create',
+      description: 'Quick form setup: create a document type from the list of fields to read (label, value type, plain-language instructions). Generates the output form and a template, and publishes it unless publish is false.',
+      permissions: ['lomi.templates.write', 'lomi.templates.publish'], effect: 'consequential',
+      input: s.object({
+        tenant, name: s.string(), key: s.optional(s.string()), description: s.optional(s.string()), publish: s.optional(s.boolean()),
+        fields: s.array(s.object({
+          label: s.string(), type: s.enum(['string', 'date', 'money', 'number', 'percent']), instructions: s.optional(s.string()), required: s.optional(s.boolean()), key: s.optional(s.string()),
+        })),
+      }),
+      output: anyObject,
+      run: async ({ tenant: _t, ...rest }, c) => (await createForm(ctx, c.actor, { tenantId: c.tenantId, ...rest })) as unknown as Record<string, unknown>,
+    }),
 
     // ── Documents ──────────────────────────────────────────────────────────
     cap({
-      name: 'documents.submit', description: 'Submit a PDF. Returns after durable acceptance; processing is asynchronous.', permissions: ['documents.submit'], effect: 'consequential', idempotent: true,
+      name: 'documents.submit', description: 'Submit a PDF. Returns after durable acceptance; processing is asynchronous. Without documentType, Lomi identifies the type after reading it.', permissions: ['documents.submit'], effect: 'consequential', idempotent: true,
       input: s.object({ tenant, filename: s.string(), contentBase64: s.string(), documentType: s.optional(s.string()), channel: s.optional(channel), title: s.optional(s.string()), idempotencyKey: s.optional(s.string()) }),
       output: submission,
       run: async (i, c) => submitDocument(ctx, c.actor, { tenantId: c.tenantId, documentTypeKey: i.documentType, filename: i.filename, bytes: fromB64(i.contentBase64), channel: i.channel ?? 'api', title: i.title, idempotencyKey: i.idempotencyKey }),
@@ -304,9 +351,22 @@ export function buildApplication(ctx: Ctx): AppPortApplication {
     }),
     cap({
       name: 'documents.list', description: 'Search and filter documents with status, progress and next action.', permissions: ['documents.read'], effect: 'observation',
-      input: s.object({ tenant, search: s.optional(s.string()), status: s.optional(s.string()), documentType: s.optional(s.string()), limit: s.optional(s.integer()), offset: s.optional(s.integer()) }),
+      input: s.object({
+        tenant, search: s.optional(s.string()), status: s.optional(s.string()), documentType: s.optional(s.string()), limit: s.optional(s.integer()), offset: s.optional(s.integer()),
+        mine: s.optional(s.boolean()),
+      }),
       output: list,
-      run: async ({ tenant: _t, ...rest }, c) => ({ items: await listDocuments(ctx, { tenantId: c.tenantId, ...rest }) }),
+      run: async ({ tenant: _t, mine, ...rest }, c) => ({
+        items: await listDocuments(ctx, { tenantId: c.tenantId, ...rest, ...(mine ? { submittedBy: c.actor.principalId } : {}) }),
+      }),
+    }),
+    cap({
+      name: 'documents.type.set',
+      description: 'Say which document type a submission is, when Lomi could not identify it (status needs_type). Processing then continues automatically.',
+      permissions: ['documents.submit'], effect: 'consequential',
+      input: s.object({ tenant, documentId: s.string(), documentType: s.string() }),
+      output: s.object({ documentId: s.string(), documentType: s.string(), status: s.string() }),
+      run: async (i, c) => setDocumentType(ctx, c.actor, { tenantId: c.tenantId, documentId: i.documentId, documentType: i.documentType }),
     }),
     cap({
       name: 'documents.get', description: 'A document version with extracted values, evidence, checks, decisions and history.', permissions: ['documents.read'], effect: 'observation',

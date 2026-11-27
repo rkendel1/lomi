@@ -62,7 +62,7 @@ export function openApiDocument() {
           ].join('\n'),
           parameters: [
             { name: 'tenant', in: 'path', required: true, description: 'Tenant slug, e.g. `lakeside`', schema: { type: 'string', pattern: '^[a-z0-9][a-z0-9-]{1,62}$' } },
-            { name: 'documentType', in: 'query', required: false, description: "Document type key (e.g. `invoice`). Defaults to the ingress's default type.", schema: { type: 'string' } },
+            { name: 'documentType', in: 'query', required: false, description: "Document type key (e.g. `invoice`). Optional: without it the ingress default applies, else Lomi identifies the type after reading the file (Laya); unclear files wait as `needs_type` for a person to choose.", schema: { type: 'string' } },
             { name: 'filename', in: 'query', required: false, description: 'File name for `application/pdf` bodies.', schema: { type: 'string' } },
             { name: 'Idempotency-Key', in: 'header', required: false, description: 'Replays return the original submission (single submissions).', schema: { type: 'string' } },
           ],
@@ -272,7 +272,7 @@ export function openApiDocument() {
         ReviewStatus: {
           type: 'string',
           description: 'Detailed lifecycle including review.',
-          enum: ['received', 'queued', 'parsing', 'extracting', 'validating', 'awaiting_review', 'partially_reviewed', 'approved', 'completed', 'failed_retryable', 'failed_operator', 'superseded'],
+          enum: ['received', 'queued', 'parsing', 'extracting', 'validating', 'awaiting_review', 'partially_reviewed', 'approved', 'completed', 'failed_retryable', 'failed_operator', 'needs_type', 'superseded'],
         },
         Submission: {
           type: 'object',
@@ -298,7 +298,7 @@ export function openApiDocument() {
         MultipartUpload: {
           type: 'object',
           required: ['file'],
-          properties: { file: { type: 'string', format: 'binary' }, type: { type: 'string', description: 'Document type key, e.g. `invoice` (alias: `documentType`)' } },
+          properties: { file: { type: 'string', format: 'binary' }, type: { type: 'string', description: 'Document type key, e.g. `invoice` (alias: `documentType`). Optional: omitted, Lomi identifies the type.' } },
         },
         Receipts: {
           type: 'object',
@@ -324,7 +324,8 @@ export function openApiDocument() {
           type: 'object',
           properties: {
             id: { type: 'string' }, title: { type: 'string' },
-            documentType: { type: 'object', properties: { key: { type: 'string' }, name: { type: 'string' } } },
+            documentType: { type: ['object', 'null'], description: 'Null until identified.', properties: { key: { type: 'string' }, name: { type: 'string' } } },
+            typeSource: { type: 'string', enum: ['submitted', 'ingress_default', 'only_type', 'detected', 'person', 'pending'] },
             currentVersion: { type: 'object', properties: { id: { type: 'string' }, number: { type: 'integer' } } },
             submittedAt: { type: 'string', format: 'date-time' }, status: ref('Status'), reviewStatus: ref('ReviewStatus'), statusLabel: { type: 'string' },
             receipts: ref('Receipts'),

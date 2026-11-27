@@ -256,3 +256,23 @@ input, select, textarea { font: inherit; border: 1px solid var(--line); border-r
 .dup-warn { color: #7a4a00; }
 .receipt-duplicate_exact { border-left: 3px solid #cbd5e1; }
 .receipt-new_version { border-left: 3px solid var(--brand); }
+
+/* Document type detection, quick forms, team, admin workspace */
+.experience-admin { border-top-color: #0f766e; }
+.shell-admin .shell-workspace { background: #134e4a; color: #ccfbf1; }
+.type-card.type-auto { border-style: dashed; }
+.type-tag .small { white-space: nowrap; }
+.row-action { background: #f3f6ff; }
+.card-action { border-color: #cdd9ff; background: #f7f9ff; }
+.needs-type-row { display: grid; gap: 4px; padding: 10px 0; border-top: 1px solid var(--line); }
+.needs-type-row:first-of-type { border-top: 0; }
+.type-chooser .form-row { align-items: end; }
+.grow { flex: 1; }
+.quick-form h2 { margin-top: 0; }
+.quick-form label.grow input { width: 100%; }
+.quick-fields input:not([type='checkbox']) { width: 100%; box-sizing: border-box; }
+.quick-fields td { vertical-align: middle; }
+.login-token { display: flex; gap: 8px; align-items: end; justify-content: center; margin: 20px auto 0; max-width: 560px; }
+.login-token label { display: grid; gap: 4px; flex: 1; font-size: 13px; }
+.token-notice code.url { display: block; margin: 6px 0; user-select: all; }
+.ingress-card .btn-link { padding: 0; }

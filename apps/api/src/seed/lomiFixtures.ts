@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import type { Field, FieldType } from '@lomi/core';
+import type { Field } from '@lomi/core';
 import type { TemplateDefinition } from '@lomi/docops';
-import { formRowY } from './fixtures';
+import { formField } from '../domain/forms';
 
 /**
  * The assignment fixtures (`packages/core/src/__tests__/fixtures`): the
@@ -77,29 +77,11 @@ const label = (field: string) => field.replace(/_/g, ' ').replace(/\b1br\b/, '1B
 
 export function templateFromExpected(docType: string, expected: ExpectedField[]): TemplateDefinition {
   const fields: Field[] = expected.map((e, i) => {
-    const type: FieldType = e.type === 'date' ? 'date' : e.type === 'money' ? 'currency' : 'text';
-    const sourceFieldId = `${docType}_${e.field}`;
-    const instructions = INSTRUCTIONS[e.field] ?? e.field.replace(/_/g, ' ');
+    const f = formField(docType, i, { key: e.field, label: label(e.field), type: e.type, instructions: INSTRUCTIONS[e.field] ?? e.field.replace(/_/g, ' ') });
     return {
-      id: sourceFieldId,
-      name: sourceFieldId,
-      sourceFieldId,
-      semanticKey: `${docType}.${e.field}`,
-      displayLabel: label(e.field),
-      page: 0,
-      x: 222,
-      y: formRowY(i),
-      width: 320,
-      height: 14,
-      type,
-      fontSize: 10,
-      maxWidth: 320,
-      ...(e.type === 'number' ? { dataType: 'number' as const } : {}),
-      ...(type === 'date' ? { transformType: 'date' as const, dateFormat: 'YYYY-MM-DD' as const } : {}),
-      ...(type === 'currency' ? { transformType: 'currency' as const, currencySymbol: 'USD' as const } : {}),
-      extraction: { method: 'llm', instructions, valueType: e.type },
+      ...f,
       validationRules: [
-        ...(e.type === 'percent' ? [{ kind: 'regex' as const, pattern: '^\\d+(\\.\\d+)?%$', message: 'Expected a percentage such as 4.2%.' }] : []),
+        ...(f.validationRules ?? []),
         ...(SEMANTIC_CHECKS[e.field] ? [{ kind: 'semantic' as const, prompt: SEMANTIC_CHECKS[e.field], decision: { type: 'yes_no' as const } }] : []),
       ],
     };

@@ -1,12 +1,14 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { call, can, type Me } from '../lib/client';
 import { UploadPanel } from '../components/ops/UploadPanel';
-import { ProgressBar, StatusBadge } from './shared';
+import { ProgressBar, StatusBadge, TypeTag, type TypeInfo } from './shared';
 
 export interface DocumentSummary {
   id: string;
   title: string;
-  documentType: { key: string; name: string };
+  documentType: { key: string; name: string } | null;
+  typeSource: string;
+  classification: TypeInfo['classification'];
   currentVersion: { id: string; number: number };
   submittedAt: string;
   status: string;
@@ -27,6 +29,7 @@ const STATUS_FILTERS = [
   ['partially_reviewed', 'Review in progress'],
   ['approved', 'Approved'],
   ['completed', 'Completed'],
+  ['needs_type', 'Needs document type'],
   ['failed_operator', 'On hold'],
 ];
 
@@ -146,7 +149,7 @@ export const DocumentsPage: React.FC<{ tenant: string; me: Me }> = ({ tenant, me
         </thead>
         <tbody>
           {items.map((d) => (
-            <tr key={d.id} onClick={() => (window.location.hash = `/documents/${d.id}`)} className={d.status === 'failed_operator' ? 'row-hold' : ''}>
+            <tr key={d.id} onClick={() => (window.location.hash = `/documents/${d.id}`)} className={d.status === 'failed_operator' ? 'row-hold' : d.status === 'needs_type' ? 'row-action' : ''}>
               <td>
                 <a href={`#/documents/${d.id}`}>{d.title}</a>
                 {d.receipts.revisions > 0 && <span className="tag tag-info" title="A revised version arrived; unchanged reviews were carried over">revised · v{d.currentVersion.number}</span>}
@@ -158,7 +161,7 @@ export const DocumentsPage: React.FC<{ tenant: string; me: Me }> = ({ tenant, me
                 {d.relatedDocuments > 0 && <span className="tag" title="Another document carries the same identifying values (e.g. vendor and invoice number). Not merged.">possible duplicate</span>}
                 {d.warning && <span className="tag tag-bad" title={d.warning}>check document type</span>}
               </td>
-              <td>{d.documentType.name}</td>
+              <td><TypeTag doc={d} /></td>
               <td>v{d.currentVersion.number}</td>
               <td>{new Date(d.submittedAt).toLocaleString()}</td>
               <td><span className={`xs xs-${d.extractionStatus}`}>{d.extractionStatus}</span></td>

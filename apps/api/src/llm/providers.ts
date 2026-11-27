@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { ProviderNotReadyError, type ExtractionProvider, type SemanticValidator } from '@lomi/docops';
 import { AnthropicExtractionProvider, AnthropicSemanticValidator } from './anthropic';
 import { LayaSemanticValidator, LayaSession, nativeLaya, type LayaNative } from './laya';
+import { LayaDocumentClassifier, type DocumentClassifier } from './layaClassification';
 import { LayaExtractionProvider } from './layaExtraction';
 
 /**
@@ -30,6 +31,8 @@ import { LayaExtractionProvider } from './layaExtraction';
 export interface ProviderRegistry {
   extraction: Record<string, ExtractionProvider>;
   semantic: Record<string, SemanticValidator>;
+  /** Identifies the document type of submissions sent without one (local Laya only; never external). */
+  classifier?: DocumentClassifier | null;
   defaults: { extraction: string; semantic: string };
 }
 
@@ -48,6 +51,7 @@ export interface ProviderEnv {
 export function buildProviders(env: ProviderEnv): ProviderRegistry {
   const extraction: Record<string, ExtractionProvider> = {};
   const semantic: Record<string, SemanticValidator> = {};
+  let classifier: DocumentClassifier | null = null;
   if (env.anthropicApiKey) {
     const client = new Anthropic({ apiKey: env.anthropicApiKey });
     extraction.anthropic = new AnthropicExtractionProvider(client, env.extractionModel);
@@ -58,6 +62,7 @@ export function buildProviders(env: ProviderEnv): ProviderRegistry {
     const session = new LayaSession(env.layaNative ?? nativeLaya(), { modelRoot: env.layaModelRoot });
     extraction.laya = new LayaExtractionProvider(session);
     semantic.laya = new LayaSemanticValidator(session);
+    classifier = new LayaDocumentClassifier(session);
   }
 
   const localDefault = (name: string | undefined, available: Record<string, { external: boolean }>, role: string) => {
@@ -69,6 +74,7 @@ export function buildProviders(env: ProviderEnv): ProviderRegistry {
   return {
     extraction,
     semantic,
+    classifier,
     defaults: {
       extraction: localDefault(env.extractionDefault, extraction, 'extraction'),
       semantic: localDefault(env.semanticDefault, semantic, 'semantic'),
