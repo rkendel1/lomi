@@ -27,3 +27,4 @@ yarn-error.log*
 
 # local object storage for non-Docker runs
 .lomi-storage
+dump.rdb
