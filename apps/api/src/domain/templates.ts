@@ -9,7 +9,7 @@ export function validateDefinition(definition: TemplateDefinition): string[] {
   const problems: string[] = [];
   const keys = new Set<string>();
   for (const f of definition.fields ?? []) {
-    if (!f.semanticKey || !/^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$/.test(f.semanticKey)) problems.push(`"${f.semanticKey}" is not a valid semantic key (e.g. invoice.total_amount).`);
+    if (!f.semanticKey || !/^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z0-9_]+)+$/.test(f.semanticKey)) problems.push(`"${f.semanticKey}" is not a valid semantic key (e.g. invoice.total_amount).`);
     if (keys.has(f.semanticKey)) problems.push(`Semantic key "${f.semanticKey}" is used twice.`);
     keys.add(f.semanticKey);
     if (f.extraction?.method === 'pattern') {

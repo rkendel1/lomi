@@ -5,7 +5,7 @@
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { Field } from '@lomi/core';
-import { generateLayout, generateMapping, generateTransforms, generateTables } from '@lomi/core';
+import { generateLayout, generateMapping, generateTransforms, generateTables, normalizeSemanticField } from '@lomi/core';
 import { arrayBufferToBase64, renderPdfOnServer } from '../lib/api';
 import './PreviewPanel.css';
 
@@ -51,11 +51,14 @@ export const PreviewPanel: React.FC<Props> = ({ fields, pdfFile }) => {
     setError(null);
 
     try {
+      // Normalize semantic keys to canonical forms (e.g., person.mailingAddress instead of data.form10Page10MailingAddress0)
+      const normalizedFields = validFields.map((field) => normalizeSemanticField(field));
+
       // Generate schemas from fields
-      const layout = generateLayout(validFields);
-      const mapping = generateMapping(validFields);
-      const transforms = generateTransforms(validFields);
-      const tables = generateTables(validFields);
+      const layout = generateLayout(normalizedFields);
+      const mapping = generateMapping(normalizedFields);
+      const transforms = generateTransforms(normalizedFields);
+      const tables = generateTables(normalizedFields);
 
       // Read PDF template
       const templateBytes = await pdfFile.arrayBuffer();
@@ -103,10 +106,13 @@ export const PreviewPanel: React.FC<Props> = ({ fields, pdfFile }) => {
     setError(null);
 
     try {
-      const layout = generateLayout(validFields);
-      const mapping = generateMapping(validFields);
-      const transforms = generateTransforms(validFields);
-      const tables = generateTables(validFields);
+      // Normalize semantic keys to canonical forms
+      const normalizedFields = validFields.map((field) => normalizeSemanticField(field));
+
+      const layout = generateLayout(normalizedFields);
+      const mapping = generateMapping(normalizedFields);
+      const transforms = generateTransforms(normalizedFields);
+      const tables = generateTables(normalizedFields);
       const templateBytes = await pdfFile.arrayBuffer();
 
       const blob = await renderPdfOnServer({
